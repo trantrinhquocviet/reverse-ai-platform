@@ -1,0 +1,63 @@
+version: "3.9"
+
+# Development overrides — hot reload, local mounts, no nginx.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  backend:
+    build:
+      target: builder   # use builder stage which has all dev tools
+    volumes:
+      - ./backend:/app  # mount source for hot reload
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+    environment:
+      DEBUG: "true"
+
+  frontend:
+    build:
+      context: ./reverse-ai-studio
+      dockerfile: Dockerfile
+      target: builder
+    volumes:
+      - ./reverse-ai-studio:/app
+      - /app/node_modules  # preserve container node_modules
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000/api/v1
+
+  ocr_worker:
+    volumes:
+      - ./backend:/app
+    command: ["python", "-m", "workers.ocr_worker.worker"]
+    environment:
+      DEBUG: "true"
+
+  frame_worker:
+    volumes:
+      - ./backend:/app
+    command: ["python", "-m", "workers.frame_worker.worker"]
+    environment:
+      DEBUG: "true"
+
+  training_worker:
+    volumes:
+      - ./backend:/app
+    command: ["python", "-m", "workers.training_worker.worker"]
+    environment:
+      DEBUG: "true"
+
+  inference_worker:
+    volumes:
+      - ./backend:/app
+    command: ["python", "-m", "workers.inference_worker.worker"]
+    environment:
+      DEBUG: "true"
