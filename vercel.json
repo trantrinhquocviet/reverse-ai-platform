@@ -1,0 +1,8 @@
+{
+  "buildCommand": "cd reverse-ai-studio && npm ci && npm run build",
+  "outputDirectory": "reverse-ai-studio/dist",
+  "framework": null,
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

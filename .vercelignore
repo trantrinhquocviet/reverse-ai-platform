@@ -1,0 +1,5 @@
+api/
+backend/
+docker/
+node_modules/
+*.md
