@@ -37,8 +37,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         debug=settings.DEBUG,
     )
     await connect_db()
-    await get_redis_pool()
-    logger.info("Database and Redis connections established.")
+    try:
+        await get_redis_pool()
+        logger.info("Database and Redis connections established.")
+    except Exception as e:
+        logger.warning("Redis unavailable — background jobs disabled.", error=str(e))
 
     yield
 
