@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import aioredis
-from aioredis import Redis
+from redis.asyncio import Redis
+from redis.asyncio import from_url as redis_from_url
 
 from app.config import settings
 
@@ -14,7 +14,7 @@ _redis_pool: Redis | None = None
 async def get_redis_pool() -> Redis:
     global _redis_pool
     if _redis_pool is None:
-        _redis_pool = await aioredis.from_url(
+        _redis_pool = await redis_from_url(
             settings.REDIS_URL,
             encoding="utf-8",
             decode_responses=True,
@@ -26,7 +26,7 @@ async def get_redis_pool() -> Redis:
 async def close_redis_pool() -> None:
     global _redis_pool
     if _redis_pool is not None:
-        await _redis_pool.close()
+        await _redis_pool.aclose()
         _redis_pool = None
 
 
@@ -36,10 +36,7 @@ async def get_redis() -> Redis:
 
 
 async def enqueue_job(queue_name: str, payload: dict[str, Any]) -> str:
-    """Push a job payload onto the named Redis list queue.
-
-    Returns the job id embedded in the payload (or generated).
-    """
+    """Push a job payload onto the named Redis list queue."""
     import uuid
 
     job_id: str = payload.get("job_id", str(uuid.uuid4()))
@@ -51,10 +48,7 @@ async def enqueue_job(queue_name: str, payload: dict[str, Any]) -> str:
 
 
 async def dequeue_job(queue_name: str, timeout: int = 5) -> dict[str, Any] | None:
-    """Blocking pop from the named Redis list queue.
-
-    Returns the deserialized payload or None on timeout.
-    """
+    """Blocking pop from the named Redis list queue."""
     redis = await get_redis_pool()
     result = await redis.brpop(queue_name, timeout=timeout)
     if result is None:
