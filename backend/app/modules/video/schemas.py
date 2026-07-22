@@ -52,3 +52,10 @@ class VideoUploadResponse(BaseModel):
     video_id: uuid.UUID
     job_id: str
     message: str
+
+
+class VideoImportUrl(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+    name: Optional[str] = Field(default=None, max_length=512)
+    warehouse: str = Field(default="", max_length=255)
+    brand: str = Field(default="", max_length=255)

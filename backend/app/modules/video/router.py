@@ -11,6 +11,7 @@ from app.dependencies import CurrentUser, get_current_user
 from app.modules.video.schemas import (
     VideoCreate,
     VideoFilter,
+    VideoImportUrl,
     VideoOut,
     VideoUpdate,
     VideoUploadResponse,
@@ -91,6 +92,29 @@ async def delete_video(
     service = VideoService(db)
     await service.delete_video(video_id)
     return SuccessResponse(message="Video deleted successfully.")
+
+
+@router.post(
+    "/import-url",
+    response_model=VideoUploadResponse,
+    status_code=202,
+    summary="Import a video from a remote URL — system downloads it automatically",
+)
+async def import_video_from_url(
+    body: VideoImportUrl,
+    db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> VideoUploadResponse:
+    service = VideoService(db)
+    video, job_id = await service.import_video_from_url(
+        body, uploaded_by=uuid.UUID(current_user.user_id)
+    )
+    logger.info("Video imported from URL", video_id=str(video.id), url=body.url, job_id=job_id)
+    return VideoUploadResponse(
+        video_id=video.id,
+        job_id=job_id,
+        message="Video URL received, downloading and queued for frame extraction.",
+    )
 
 
 @router.post(

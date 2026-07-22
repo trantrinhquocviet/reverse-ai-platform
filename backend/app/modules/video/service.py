@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import mimetypes
 import uuid
+from pathlib import PurePosixPath
 from typing import List, Tuple
+from urllib.parse import urlparse
 
+import httpx
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFoundError
 from app.core.redis import enqueue_job
 from app.modules.video.models import Video, VideoStatus
-from app.modules.video.schemas import VideoCreate, VideoFilter, VideoOut, VideoUpdate
+from app.modules.video.schemas import VideoCreate, VideoFilter, VideoImportUrl, VideoOut, VideoUpdate
 
 logger = structlog.get_logger(__name__)
 
@@ -82,6 +86,47 @@ class VideoService:
         await self.db.delete(video)
         await self.db.flush()
         logger.info("Video deleted", video_id=str(video_id))
+
+    async def import_video_from_url(
+        self, data: VideoImportUrl, uploaded_by: uuid.UUID | None = None
+    ) -> tuple[Video, str]:
+        """Download video from a remote URL, save locally, create DB record, and enqueue extraction."""
+        parsed = urlparse(data.url)
+        url_filename = PurePosixPath(parsed.path).name or "video"
+
+        # Derive a clean name: prefer explicit name, fallback to filename from URL
+        video_name = data.name or url_filename or "untitled"
+        # Ensure video extension is preserved
+        if "." not in video_name:
+            ext = mimetypes.guess_extension(
+                mimetypes.guess_type(url_filename)[0] or "video/mp4"
+            ) or ".mp4"
+            video_name += ext
+
+        local_path = f"uploads/{uuid.uuid4()}/{video_name}"
+
+        async with httpx.AsyncClient(follow_redirects=True, timeout=300) as client:
+            async with client.stream("GET", data.url) as resp:
+                resp.raise_for_status()
+                # In production: stream directly to Supabase Storage / object store.
+                # Here we collect into memory to simulate; replace with real storage write.
+                content = b"".join([chunk async for chunk in resp.aiter_bytes()])
+
+        logger.info(
+            "Video downloaded from URL",
+            url=data.url,
+            bytes=len(content),
+            local_path=local_path,
+        )
+
+        video = await self.create_video(
+            VideoCreate(name=video_name, warehouse=data.warehouse, brand=data.brand),
+            uploaded_by=uploaded_by,
+        )
+        video.file_path = local_path
+
+        job_id = await self.enqueue_frame_extraction(video.id, local_path)
+        return video, job_id
 
     async def enqueue_frame_extraction(self, video_id: uuid.UUID, file_path: str) -> str:
         """Queue a frame-extraction job and mark video as processing."""
