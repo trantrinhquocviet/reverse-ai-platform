@@ -8,20 +8,28 @@ services:
     region: singapore
     healthCheckPath: /health
     envVars:
+      # ── Database (set manually in Render Dashboard) ──────────────────────────
       - key: DATABASE_URL
         sync: false
+      # ── Redis / Upstash (set manually in Render Dashboard) ──────────────────
       - key: REDIS_URL
         sync: false
-      - key: JWT_SECRET
-        sync: false
+      # ── Supabase (set manually in Render Dashboard) ──────────────────────────
       - key: VITE_SUPABASE_URL
         sync: false
       - key: VITE_SUPABASE_ANON_KEY
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: "videos"
+      # ── Auth ─────────────────────────────────────────────────────────────────
+      - key: JWT_SECRET
+        sync: false
+      # ── CORS ─────────────────────────────────────────────────────────────────
       - key: CORS_ORIGINS
-        value: '["https://reverse-ai-platform.vercel.app"]'
+        value: '["https://reverse-ai-platform.vercel.app","http://localhost:5173"]'
+      # ── App ──────────────────────────────────────────────────────────────────
       - key: DEBUG
         value: "false"
       - key: APP_VERSION

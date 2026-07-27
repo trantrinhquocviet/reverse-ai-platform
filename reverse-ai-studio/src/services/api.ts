@@ -118,14 +118,12 @@ export const api = {
     upload: async (file: File, meta: { warehouse: string; brand: string }) => {
       const form = new FormData()
       form.append('file', file)
-      form.append('warehouse', meta.warehouse)
-      form.append('brand', meta.brand)
-      const res = await request<BackendVideo>('/videos/upload', {
-        method: 'POST',
-        body: form,
-        headers: {},
-      })
-      return mapVideo(res)
+      const params = new URLSearchParams({ warehouse: meta.warehouse, brand: meta.brand })
+      const res = await request<{ video_id: string; job_id: string; message: string }>(
+        `/videos/upload?${params}`,
+        { method: 'POST', body: form, headers: {} },
+      )
+      return res
     },
     importFromUrl: async (payload: { url: string; name?: string; warehouse: string; brand: string }) => {
       const res = await post<{ video_id: string; job_id: string; message: string }>(

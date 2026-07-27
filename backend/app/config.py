@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str = ""
     VITE_SUPABASE_ANON_KEY: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_STORAGE_BUCKET: str = "videos"
 
     # JWT
     JWT_SECRET: str = "change-me-in-production"

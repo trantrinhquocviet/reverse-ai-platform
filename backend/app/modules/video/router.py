@@ -16,6 +16,7 @@ from app.modules.video.schemas import (
     VideoUpdate,
     VideoUploadResponse,
 )
+from app.core.storage import public_url, upload_file
 from app.modules.video.service import VideoService
 from app.schemas.common import PaginatedResponse, SuccessResponse
 
@@ -130,18 +131,17 @@ async def upload_video(
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> VideoUploadResponse:
-    # In production: stream file to Supabase Storage, get back a signed URL / path.
-    # Here we simulate a file path.
-    simulated_path = f"uploads/{uuid.uuid4()}/{file.filename}"
-
     service = VideoService(db)
     video = await service.create_video(
         VideoCreate(name=file.filename or "untitled", warehouse=warehouse, brand=brand),
         uploaded_by=uuid.UUID(current_user.user_id),
     )
-    video.file_path = simulated_path
 
-    job_id = await service.enqueue_frame_extraction(video.id, simulated_path)
+    storage_path = await upload_file(file, video.id)
+    video.file_path = public_url(storage_path)
+    await db.flush()
+
+    job_id = await service.enqueue_frame_extraction(video.id, video.file_path)
 
     logger.info(
         "Video uploaded",

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
 from app.core.redis import enqueue_job
+from app.core.storage import public_url, upload_bytes
 from app.modules.video.models import Video, VideoStatus
 from app.modules.video.schemas import VideoCreate, VideoFilter, VideoImportUrl, VideoOut, VideoUpdate
 
@@ -103,29 +104,23 @@ class VideoService:
             ) or ".mp4"
             video_name += ext
 
-        local_path = f"uploads/{uuid.uuid4()}/{video_name}"
-
         async with httpx.AsyncClient(follow_redirects=True, timeout=300) as client:
             async with client.stream("GET", data.url) as resp:
                 resp.raise_for_status()
-                # In production: stream directly to Supabase Storage / object store.
-                # Here we collect into memory to simulate; replace with real storage write.
                 content = b"".join([chunk async for chunk in resp.aiter_bytes()])
 
-        logger.info(
-            "Video downloaded from URL",
-            url=data.url,
-            bytes=len(content),
-            local_path=local_path,
-        )
+        logger.info("Video downloaded from URL", url=data.url, bytes=len(content))
 
         video = await self.create_video(
             VideoCreate(name=video_name, warehouse=data.warehouse, brand=data.brand),
             uploaded_by=uploaded_by,
         )
-        video.file_path = local_path
 
-        job_id = await self.enqueue_frame_extraction(video.id, local_path)
+        storage_path = await upload_bytes(content, video_name, video.id)
+        video.file_path = public_url(storage_path)
+        await self.db.flush()
+
+        job_id = await self.enqueue_frame_extraction(video.id, video.file_path)
         return video, job_id
 
     async def enqueue_frame_extraction(self, video_id: uuid.UUID, file_path: str) -> str:
