@@ -65,12 +65,17 @@ class VideoService:
             warehouse=data.warehouse,
             brand=data.brand,
             resolution=data.resolution,
+            file_path=data.file_path or "",
             uploaded_by=uploaded_by,
             status=VideoStatus.pending.value,
         )
         self.db.add(video)
         await self.db.flush()
         logger.info("Video record created", video_id=str(video.id), name=video.name)
+
+        if data.file_path:
+            await self.enqueue_frame_extraction(video.id, data.file_path)
+
         return video
 
     async def update_video(self, video_id: uuid.UUID, data: VideoUpdate) -> Video:

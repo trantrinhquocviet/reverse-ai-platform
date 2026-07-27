@@ -1,4 +1,5 @@
 import type { Video, DatasetImage, Warehouse, Brand, AIModel, Activity, UserProfile } from '@/types'
+import { uploadVideoToStorage } from '@/lib/supabase'
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
 
@@ -116,14 +117,18 @@ export const api = {
       return { success: true, id }
     },
     upload: async (file: File, meta: { warehouse: string; brand: string }) => {
-      const form = new FormData()
-      form.append('file', file)
-      const params = new URLSearchParams({ warehouse: meta.warehouse, brand: meta.brand })
-      const res = await request<{ video_id: string; job_id: string; message: string }>(
-        `/videos/upload?${params}`,
-        { method: 'POST', body: form, headers: {} },
-      )
-      return res
+      // Step 1: upload file directly to Supabase Storage
+      const tempId = crypto.randomUUID()
+      const publicUrl = await uploadVideoToStorage(file, tempId)
+
+      // Step 2: create video record in backend with the storage URL
+      const res = await post<BackendVideo>('/videos', {
+        name: file.name,
+        warehouse: meta.warehouse,
+        brand: meta.brand,
+        file_path: publicUrl,
+      })
+      return mapVideo(res)
     },
     importFromUrl: async (payload: { url: string; name?: string; warehouse: string; brand: string }) => {
       const res = await post<{ video_id: string; job_id: string; message: string }>(

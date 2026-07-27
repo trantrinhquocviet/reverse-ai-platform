@@ -12,6 +12,7 @@ class VideoCreate(BaseModel):
     warehouse: str = Field(default="", max_length=255)
     brand: str = Field(default="", max_length=255)
     resolution: str = Field(default="", max_length=64)
+    file_path: Optional[str] = Field(default=None, max_length=2048)
 
 
 class VideoUpdate(BaseModel):
