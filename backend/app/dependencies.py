@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 
 import structlog
-from aioredis import Redis
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
