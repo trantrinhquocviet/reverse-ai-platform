@@ -3,7 +3,15 @@
   "outputDirectory": "reverse-ai-studio/dist",
   "installCommand": "cd reverse-ai-studio && npm ci",
   "framework": null,
+  "builds": [
+    {
+      "src": "backend/api/index.py",
+      "use": "@vercel/python",
+      "config": { "maxLambdaSize": "50mb" }
+    }
+  ],
   "rewrites": [
+    { "source": "/api/v1/:path*", "destination": "/backend/api/index.py" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
