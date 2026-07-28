@@ -87,14 +87,24 @@ export const api = {
     },
 
     upload: async (file: File, meta: { warehouse: string; brand: string }) => {
-      // 1. Upload directly to Supabase Storage (bucket allows anon uploads)
+      // 1. Upload directly to Supabase Storage via fetch (bypasses JWT validation)
       const storagePath = `${crypto.randomUUID()}/${file.name}`
-      const { error: uploadError } = await supabase.storage
-        .from('videos')
-        .upload(storagePath, file, { contentType: file.type || 'video/mp4', upsert: false })
-      if (uploadError) throw new Error(uploadError.message)
+      const uploadUrl = `${SUPABASE_URL}/storage/v1/object/videos/${storagePath}`
+      const uploadRes = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          'Content-Type': file.type || 'video/mp4',
+          'x-upsert': 'false',
+        },
+        body: file,
+      })
+      if (!uploadRes.ok) {
+        const err = await uploadRes.json().catch(() => ({})) as { message?: string }
+        throw new Error(err.message ?? `Upload failed: ${uploadRes.status}`)
+      }
 
-      const { data: { publicUrl } } = supabase.storage.from('videos').getPublicUrl(storagePath)
+      const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${storagePath}`
 
       // 2. Insert video record in Supabase DB
       const { data, error } = await supabase.from('videos').insert({
