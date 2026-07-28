@@ -52,6 +52,25 @@ async def upload_file(upload: UploadFile, video_id: uuid.UUID) -> str:
     return storage_path
 
 
+async def presign_upload_url(filename: str, video_id: uuid.UUID) -> tuple[str, str, str]:
+    """Generate a Supabase presigned upload URL so the client can PUT directly."""
+    storage_path = f"{video_id}/{filename}"
+    bucket = settings.SUPABASE_STORAGE_BUCKET
+
+    sign_url = f"{_storage_base()}/sign/upload/{bucket}/{storage_path}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(sign_url, headers=_auth_headers())
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(
+                f"Supabase presign failed [{resp.status_code}]: {resp.text}"
+            )
+        token = resp.json()["token"]
+
+    upload_url = f"{_storage_base()}/upload/sign/{bucket}/{storage_path}?token={token}"
+    file_public_url = public_url(storage_path)
+    return upload_url, storage_path, file_public_url
+
+
 async def upload_bytes(content: bytes, filename: str, video_id: uuid.UUID) -> str:
     """Upload raw bytes (e.g. downloaded from URL) to Supabase Storage."""
     storage_path = f"{video_id}/{filename}"

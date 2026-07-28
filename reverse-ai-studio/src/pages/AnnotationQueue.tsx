@@ -2,8 +2,11 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Tag, CheckCircle, XCircle, Edit3, Filter } from 'lucide-react'
 import { cn } from '@/utils/cn'
-import { mockAnnotations, mockFrames, mockOCRResults } from '@/services/mockData'
 import type { Annotation } from '@/types'
+
+const mockAnnotations: Annotation[] = []
+const mockFrames: { id: string; thumbnailUrl: string }[] = []
+const mockOCRResults: { frameId: string; detectedText: string; trackingCode: string; carrier: string }[] = []
 
 function StatusBadge({ status }: { status: Annotation['status'] }) {
   const cfg = {

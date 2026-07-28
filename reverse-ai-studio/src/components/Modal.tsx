@@ -36,11 +36,11 @@ export function Modal({ open, onClose, title, description, children, size = 'md'
       />
       <div
         className={cn(
-          'relative w-full bg-[#111118] border border-[#2a2a38] rounded-[18px] shadow-2xl animate-fade-in',
+          'relative w-full bg-[#111118] border border-[#2a2a38] rounded-[18px] shadow-2xl animate-fade-in flex flex-col max-h-[calc(100vh-2rem)]',
           sizeClasses[size]
         )}
       >
-        <div className="flex items-start justify-between p-6 pb-4 border-b border-[#1e1e2a]">
+        <div className="flex items-start justify-between p-6 pb-4 border-b border-[#1e1e2a] flex-shrink-0">
           <div>
             <h2 className="text-base font-semibold text-[#f0f0f5]">{title}</h2>
             {description && (
@@ -54,7 +54,7 @@ export function Modal({ open, onClose, title, description, children, size = 'md'
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="p-6">{children}</div>
+        <div className="p-6 overflow-y-auto">{children}</div>
       </div>
     </div>
   )

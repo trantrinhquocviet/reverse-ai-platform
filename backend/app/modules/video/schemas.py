@@ -60,3 +60,9 @@ class VideoImportUrl(BaseModel):
     name: Optional[str] = Field(default=None, max_length=512)
     warehouse: str = Field(default="", max_length=255)
     brand: str = Field(default="", max_length=255)
+
+
+class PresignedUploadResponse(BaseModel):
+    upload_url: str
+    storage_path: str
+    public_url: str

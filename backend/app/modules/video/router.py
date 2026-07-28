@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.dependencies import CurrentUser, get_current_user
 from app.modules.video.schemas import (
     VideoCreate,
     VideoFilter,
@@ -15,8 +14,9 @@ from app.modules.video.schemas import (
     VideoOut,
     VideoUpdate,
     VideoUploadResponse,
+    PresignedUploadResponse,
 )
-from app.core.storage import public_url, upload_file
+from app.core.storage import public_url, presign_upload_url, upload_file
 from app.modules.video.service import VideoService
 from app.schemas.common import PaginatedResponse, SuccessResponse
 
@@ -34,7 +34,6 @@ async def list_videos(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
 ) -> PaginatedResponse[VideoOut]:
     service = VideoService(db)
     filters = VideoFilter(
@@ -50,25 +49,44 @@ async def list_videos(
     return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
 
 
+@router.get(
+    "/presign-upload",
+    response_model=PresignedUploadResponse,
+    summary="Get a presigned URL to upload a video file directly to Supabase Storage",
+)
+async def presign_upload(
+    filename: str = Query(..., min_length=1, max_length=512),
+) -> PresignedUploadResponse:
+    import uuid as _uuid
+    video_id = _uuid.uuid4()
+    upload_url, storage_path, file_public_url = await presign_upload_url(filename, video_id)
+    return PresignedUploadResponse(
+        upload_url=upload_url,
+        storage_path=storage_path,
+        public_url=file_public_url,
+    )
+
+
 @router.get("/{video_id}", response_model=VideoOut, summary="Get video by ID")
 async def get_video(
     video_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
 ) -> VideoOut:
     service = VideoService(db)
     video = await service.get_video(video_id)
     return VideoOut.model_validate(video)
 
 
+_ANON_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+
 @router.post("", response_model=VideoOut, status_code=201, summary="Create video metadata")
 async def create_video(
     body: VideoCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
 ) -> VideoOut:
     service = VideoService(db)
-    video = await service.create_video(body, uploaded_by=uuid.UUID(current_user.user_id))
+    video = await service.create_video(body, uploaded_by=_ANON_USER_ID)
     return VideoOut.model_validate(video)
 
 
@@ -77,7 +95,6 @@ async def update_video(
     video_id: uuid.UUID,
     body: VideoUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
 ) -> VideoOut:
     service = VideoService(db)
     video = await service.update_video(video_id, body)
@@ -88,7 +105,6 @@ async def update_video(
 async def delete_video(
     video_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
 ) -> SuccessResponse:
     service = VideoService(db)
     await service.delete_video(video_id)
@@ -104,11 +120,10 @@ async def delete_video(
 async def import_video_from_url(
     body: VideoImportUrl,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
 ) -> VideoUploadResponse:
     service = VideoService(db)
     video, job_id = await service.import_video_from_url(
-        body, uploaded_by=uuid.UUID(current_user.user_id)
+        body, uploaded_by=_ANON_USER_ID
     )
     logger.info("Video imported from URL", video_id=str(video.id), url=body.url, job_id=job_id)
     return VideoUploadResponse(
@@ -129,12 +144,11 @@ async def upload_video(
     warehouse: str = Query(default=""),
     brand: str = Query(default=""),
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
 ) -> VideoUploadResponse:
     service = VideoService(db)
     video = await service.create_video(
         VideoCreate(name=file.filename or "untitled", warehouse=warehouse, brand=brand),
-        uploaded_by=uuid.UUID(current_user.user_id),
+        uploaded_by=_ANON_USER_ID,
     )
 
     storage_path = await upload_file(file, video.id)

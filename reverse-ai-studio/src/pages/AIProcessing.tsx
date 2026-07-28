@@ -5,8 +5,9 @@ import {
   FileVideo, ScanText, MapPin, Package, Box, Star, X
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
-import { mockProcessingJobs } from '@/services/mockData'
 import type { ProcessingJob, ProcessingJobStatus } from '@/types'
+
+const mockProcessingJobs: ProcessingJob[] = []
 
 function StatusBadge({ status }: { status: ProcessingJobStatus }) {
   const cfg = {
