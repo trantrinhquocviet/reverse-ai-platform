@@ -118,6 +118,6 @@ VITE_API_URL=http://localhost:8000/api/v1
 
 ## Deployment
 
-- **Frontend**: Deployed to Vercel (vercel.json / `vercel.ts` config in `reverse-ai-studio/`). `installCommand` is overridden to `npm install` only.
-- **Backend**: Dockerized. Workers run as separate containers (`frame_worker`, `ocr_worker`, `training_worker`, `inference_worker`).
+- **Frontend**: Deployed to Vercel (`reverse-ai-studio/`). URL: `https://reverse-ai-platform.vercel.app`
+- **Backend**: Deployed to Vercel as a Python serverless function. Entry point: `backend/api/index.py` → `app.main:app`. URL: `https://reverse-ai-platform.vercel.app/api/v1`
 - **Push workflow**: Always ask before `git push origin main` or `vercel deploy`.
