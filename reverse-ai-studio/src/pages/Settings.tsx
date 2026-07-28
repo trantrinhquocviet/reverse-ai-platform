@@ -184,9 +184,12 @@ function WarehouseSettings() {
           <Input
             label="Location"
             placeholder="e.g. Ho Chi Minh City"
-            {...register('location', { required: 'Location is required' })}
+            {...register('location')}
             error={errors.location?.message}
           />
+          {addMutation.error && (
+            <p className="text-xs text-[#f87171]">{(addMutation.error as Error).message}</p>
+          )}
           <div className="flex gap-2 justify-end">
             <Button variant="ghost" type="button" onClick={() => setAddOpen(false)}>Cancel</Button>
             <Button variant="primary" type="submit" loading={addMutation.isPending}>Add</Button>
@@ -276,12 +279,9 @@ function BrandSettings() {
             {...register('name', { required: 'Name is required' })}
             error={errors.name?.message}
           />
-          <Input
-            label="Brand Code"
-            placeholder="e.g. NK"
-            {...register('code', { required: 'Code is required', maxLength: { value: 5, message: 'Max 5 chars' } })}
-            error={errors.code?.message}
-          />
+          {addMutation.error && (
+            <p className="text-xs text-[#f87171]">{(addMutation.error as Error).message}</p>
+          )}
           <div className="flex gap-2 justify-end">
             <Button variant="ghost" type="button" onClick={() => setAddOpen(false)}>Cancel</Button>
             <Button variant="primary" type="submit" loading={addMutation.isPending}>Add</Button>

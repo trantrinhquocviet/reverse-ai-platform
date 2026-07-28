@@ -1,299 +1,292 @@
+import { createClient } from '@supabase/supabase-js'
 import type { Video, DatasetImage, Warehouse, Brand, AIModel, Activity, UserProfile } from '@/types'
-import { uploadVideoToStorage } from '@/lib/supabase'
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string
+const API_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? ''
 
-// ── Token helpers ─────────────────────────────────────────────────────────────
-const getToken = () => localStorage.getItem('access_token')
-const setToken = (token: string) => localStorage.setItem('access_token', token)
-const clearToken = () => localStorage.removeItem('access_token')
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
-// ── HTTP client ───────────────────────────────────────────────────────────────
-async function request<T>(
-  path: string,
-  options: RequestInit = {},
-  authenticated = true,
-): Promise<T> {
-  // Don't set Content-Type for FormData — browser must set it with the multipart boundary
-  const isFormData = options.body instanceof FormData
-  const headers: Record<string, string> = isFormData
-    ? {}
-    : { 'Content-Type': 'application/json' }
-  Object.assign(headers, options.headers as Record<string, string>)
-
-  if (authenticated) {
-    const token = getToken()
-    if (token) headers['Authorization'] = `Bearer ${token}`
-  }
-
-  const res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
-
-  if (res.status === 401) {
-    clearToken()
-    window.location.href = '/login'
-    throw new Error('Unauthorized')
-  }
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText }))
-    throw new Error(err.message ?? `HTTP ${res.status}`)
-  }
-
-  return res.json() as Promise<T>
-}
-
-const get = <T>(path: string) => request<T>(path)
-const post = <T>(path: string, body: unknown, auth = true) =>
-  request<T>(path, { method: 'POST', body: JSON.stringify(body) }, auth)
-const patch = <T>(path: string, body: unknown) =>
-  request<T>(path, { method: 'PATCH', body: JSON.stringify(body) })
-const del = <T>(path: string) => request<T>(path, { method: 'DELETE' })
-
-// ── API surface ───────────────────────────────────────────────────────────────
+// ── Auth ──────────────────────────────────────────────────────────────────────
 export const api = {
   auth: {
     login: async (email: string, password: string) => {
-      const res = await post<{ access_token: string; token_type: string }>(
-        '/auth/login',
-        { email, password },
-        false,
-      )
-      setToken(res.access_token)
-      return res
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) throw new Error(error.message)
+      return { access_token: data.session!.access_token, token_type: 'bearer' }
     },
-    me: () => get<{ id: string; email: string; full_name: string; role: string }>('/auth/me'),
-    logout: () => {
-      clearToken()
+    me: async () => {
+      const { data: { user }, error } = await supabase.auth.getUser()
+      if (error || !user) throw new Error('Not authenticated')
+      return {
+        id: user.id,
+        email: user.email!,
+        full_name: (user.user_metadata?.full_name as string) ?? '',
+        role: (user.user_metadata?.role as string) ?? 'viewer',
+      }
+    },
+    logout: async () => {
+      await supabase.auth.signOut()
       window.location.href = '/login'
     },
   },
 
+  // ── Dashboard ───────────────────────────────────────────────────────────────
   dashboard: {
     getStats: async () => {
-      const res = await get<{
-        total_videos: number
-        processing_videos: number
-        pending_review: number
-        total_dataset_images: number
-        total_models: number
-        storage_used_gb: number
-        storage_total_gb: number
-      }>('/analytics/dashboard')
+      const [total, processing, images, models] = await Promise.all([
+        supabase.from('videos').select('*', { count: 'exact', head: true }),
+        supabase.from('videos').select('*', { count: 'exact', head: true }).eq('status', 'processing'),
+        supabase.from('dataset_images').select('*', { count: 'exact', head: true }),
+        supabase.from('training_jobs').select('*', { count: 'exact', head: true }),
+      ])
       return {
-        uploadedVideos: res.total_videos,
-        processingVideos: res.processing_videos,
-        needReview: res.pending_review,
-        totalDataset: res.total_dataset_images,
-        aiModels: res.total_models,
-        storageUsed: `${res.storage_used_gb.toFixed(1)} GB`,
-        storageTotal: `${res.storage_total_gb} GB`,
-        storagePercent: Math.round((res.storage_used_gb / res.storage_total_gb) * 100),
+        uploadedVideos: total.count ?? 0,
+        processingVideos: processing.count ?? 0,
+        needReview: 0,
+        totalDataset: images.count ?? 0,
+        aiModels: models.count ?? 0,
+        storageUsed: '0.0 GB',
+        storageTotal: '10 GB',
+        storagePercent: 0,
       }
     },
     getRecentVideos: async () => {
-      const res = await get<{ items: BackendVideo[] }>('/videos?limit=4&sort=-created_at')
-      return res.items.map(mapVideo)
+      const { data } = await supabase
+        .from('videos').select('*')
+        .order('created_at', { ascending: false })
+        .limit(4)
+      return (data ?? []).map(mapVideo)
     },
-    getActivities: () =>
-      get<{ items: Activity[] }>('/analytics/activities').then((r) => r.items),
+    getActivities: async (): Promise<Activity[]> => [],
   },
 
+  // ── Videos ──────────────────────────────────────────────────────────────────
   videos: {
     getAll: async (filters?: { search?: string; status?: string; warehouse?: string; brand?: string }) => {
-      const params = new URLSearchParams()
-      if (filters?.search) params.set('search', filters.search)
-      if (filters?.status && filters.status !== 'all') params.set('status', filters.status.toLowerCase())
-      if (filters?.warehouse && filters.warehouse !== 'all') params.set('warehouse', filters.warehouse)
-      if (filters?.brand && filters.brand !== 'all') params.set('brand', filters.brand)
-      const res = await get<{ items: BackendVideo[] }>(`/videos?${params}`)
-      return res.items.map(mapVideo)
+      let q = supabase.from('videos').select('*').order('created_at', { ascending: false })
+      if (filters?.search) q = q.ilike('name', `%${filters.search}%`)
+      if (filters?.status && filters.status !== 'all') q = q.eq('status', filters.status.toLowerCase())
+      if (filters?.warehouse && filters.warehouse !== 'all') q = q.eq('warehouse', filters.warehouse)
+      if (filters?.brand && filters.brand !== 'all') q = q.eq('brand', filters.brand)
+      const { data, error } = await q
+      if (error) throw new Error(error.message)
+      return (data ?? []).map(mapVideo)
     },
+
     getById: async (id: string) => {
-      const res = await get<BackendVideo>(`/videos/${id}`)
-      return mapVideo(res)
+      const { data, error } = await supabase.from('videos').select('*').eq('id', id).single()
+      if (error) throw new Error(error.message)
+      return mapVideo(data)
     },
+
     delete: async (id: string) => {
-      await del(`/videos/${id}`)
+      const { error } = await supabase.from('videos').delete().eq('id', id)
+      if (error) throw new Error(error.message)
       return { success: true, id }
     },
-    upload: async (file: File, meta: { warehouse: string; brand: string }) => {
-      // Step 1: upload file directly to Supabase Storage
-      const tempId = crypto.randomUUID()
-      const publicUrl = await uploadVideoToStorage(file, tempId)
 
-      // Step 2: create video record in backend with the storage URL
-      const res = await post<BackendVideo>('/videos', {
+    upload: async (file: File, meta: { warehouse: string; brand: string }) => {
+      // 1. Presigned URL from backend (no auth required)
+      const presignRes = await fetch(
+        `${API_URL}/videos/presign-upload?filename=${encodeURIComponent(file.name)}`,
+      )
+      if (!presignRes.ok) throw new Error('Failed to get upload URL')
+      const { upload_url, public_url: fileUrl } = await presignRes.json() as {
+        upload_url: string; storage_path: string; public_url: string
+      }
+
+      // 2. PUT file directly to Supabase Storage (no JWT needed — signed URL)
+      const uploadRes = await fetch(upload_url, {
+        method: 'PUT',
+        body: file,
+        headers: { 'Content-Type': file.type || 'video/mp4' },
+      })
+      if (!uploadRes.ok) {
+        const err = await uploadRes.json().catch(() => ({})) as { message?: string }
+        throw new Error(err.message ?? `Storage upload failed: ${uploadRes.status}`)
+      }
+
+      // 3. Insert video record in Supabase DB
+      const { data, error } = await supabase.from('videos').insert({
         name: file.name,
         warehouse: meta.warehouse,
         brand: meta.brand,
-        file_path: publicUrl,
-      })
-      return mapVideo(res)
+        file_path: fileUrl,
+        status: 'pending',
+      }).select().single()
+      if (error) throw new Error(error.message)
+      return mapVideo(data)
     },
+
     importFromUrl: async (payload: { url: string; name?: string; warehouse: string; brand: string }) => {
-      const res = await post<{ video_id: string; job_id: string; message: string }>(
-        '/videos/import-url',
-        payload,
-      )
-      return res
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/import-video-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) throw new Error('URL import failed')
+      return res.json() as Promise<{ video_id: string; message: string }>
     },
   },
 
+  // ── Dataset ─────────────────────────────────────────────────────────────────
   dataset: {
     getStats: async () => {
-      const res = await get<{ total_images: number; training_images: number; validation_images: number }>(
-        '/datasets/stats',
-      )
+      const [total, train, val] = await Promise.all([
+        supabase.from('dataset_images').select('*', { count: 'exact', head: true }),
+        supabase.from('dataset_images').select('*', { count: 'exact', head: true }).eq('split_type', 'train'),
+        supabase.from('dataset_images').select('*', { count: 'exact', head: true }).eq('split_type', 'val'),
+      ])
       return {
-        totalImages: res.total_images,
-        trainingImages: res.training_images,
-        validationImages: res.validation_images,
+        totalImages: total.count ?? 0,
+        trainingImages: train.count ?? 0,
+        validationImages: val.count ?? 0,
       }
     },
     getImages: async () => {
-      const res = await get<{ items: BackendDatasetImage[] }>('/datasets/images')
-      return res.items.map(mapDatasetImage)
+      const { data } = await supabase
+        .from('dataset_images').select('*')
+        .order('created_at', { ascending: false })
+      return (data ?? []).map(mapDatasetImage)
     },
   },
 
+  // ── Models ──────────────────────────────────────────────────────────────────
   models: {
     getAll: async (): Promise<AIModel[]> => {
-      const res = await get<{ items: BackendTrainingJob[] }>('/training')
-      return res.items.map(mapTrainingJobToModel)
+      const { data } = await supabase
+        .from('training_jobs').select('*')
+        .order('created_at', { ascending: false })
+      return (data ?? []).map(mapTrainingJob)
     },
   },
 
+  // ── Settings ─────────────────────────────────────────────────────────────────
   settings: {
-    getWarehouses: () => get<Warehouse[]>('/inspector/warehouses'),
-    addWarehouse: (data: Omit<Warehouse, 'id' | 'createdAt'>) =>
-      post<Warehouse>('/inspector/warehouses', data),
+    getWarehouses: async (): Promise<Warehouse[]> => {
+      const { data, error } = await supabase.from('warehouses').select('*').eq('active', true).order('name')
+      if (error) throw new Error(error.message)
+      return (data ?? []).map(mapWarehouse)
+    },
+    addWarehouse: async (input: Omit<Warehouse, 'id' | 'createdAt'>): Promise<Warehouse> => {
+      const { data, error } = await supabase.from('warehouses').insert({ name: input.name, location: input.location ?? '' }).select().single()
+      if (error) throw new Error(error.message)
+      return mapWarehouse(data)
+    },
     deleteWarehouse: async (id: string) => {
-      await del(`/inspector/warehouses/${id}`)
+      const { error } = await supabase.from('warehouses').delete().eq('id', id)
+      if (error) throw new Error(error.message)
       return { success: true, id }
     },
-    getBrands: () => get<Brand[]>('/inspector/brands'),
-    addBrand: (data: Omit<Brand, 'id' | 'createdAt'>) =>
-      post<Brand>('/inspector/brands', data),
+    getBrands: async (): Promise<Brand[]> => {
+      const { data, error } = await supabase.from('brands').select('*').eq('active', true).order('name')
+      if (error) throw new Error(error.message)
+      return (data ?? []).map(mapBrand)
+    },
+    addBrand: async (input: Omit<Brand, 'id' | 'createdAt'>): Promise<Brand> => {
+      const { data, error } = await supabase.from('brands').insert({ name: input.name }).select().single()
+      if (error) throw new Error(error.message)
+      return mapBrand(data)
+    },
     deleteBrand: async (id: string) => {
-      await del(`/inspector/brands/${id}`)
+      const { error } = await supabase.from('brands').delete().eq('id', id)
+      if (error) throw new Error(error.message)
       return { success: true, id }
     },
-    getUser: (): Promise<UserProfile> =>
-      get<{ id: string; email: string; full_name: string; role: string }>('/auth/me').then((u) => ({
-        id: u.id,
-        name: u.full_name,
-        email: u.email,
-        role: u.role,
+    getUser: async (): Promise<UserProfile> => {
+      const { data: { user } } = await supabase.auth.getUser()
+      return {
+        id: user?.id ?? '',
+        name: (user?.user_metadata?.full_name as string) ?? user?.email ?? '',
+        email: user?.email ?? '',
+        role: (user?.user_metadata?.role as string) ?? 'viewer',
         avatar: '',
-      })),
+      }
+    },
   },
 
+  // ── Filters ─────────────────────────────────────────────────────────────────
   filters: {
     getWarehouses: async () => {
-      const items = await get<Warehouse[]>('/inspector/warehouses')
-      return items.map((w) => w.name)
+      const { data } = await supabase.from('warehouses').select('name').eq('active', true).order('name')
+      return (data ?? []).map((w) => w.name as string)
     },
     getBrands: async () => {
-      const items = await get<Brand[]>('/inspector/brands')
-      return items.map((b) => b.name)
+      const { data } = await supabase.from('brands').select('name').eq('active', true).order('name')
+      return (data ?? []).map((b) => b.name as string)
     },
   },
 
-  // kept for backward compat — use videos.upload instead
+  // kept for backward compat
   upload: {
     uploadVideo: (file: File, meta: { warehouse: string; brand: string }) =>
       api.videos.upload(file, meta),
   },
 }
 
-// ── Backend response shapes ───────────────────────────────────────────────────
-interface BackendVideo {
-  id: string
-  name: string
-  thumbnail_path: string
-  warehouse: string
-  brand: string
-  created_at: string
-  duration: number | null
-  resolution: string
-  status: string
-  file_size: number | null
-}
-
-interface BackendTrainingJob {
-  id: string
-  name: string
-  model_template: string
-  status: string
-  accuracy: number | null
-  created_at: string
-  map50: number | null
-}
-
-interface BackendDatasetImage {
-  id: string
-  image_name: string
-  file_path: string
-  split_type: string
-  status: string
-  created_at: string
-}
-
-// ── Mappers ───────────────────────────────────────────────────────────────────
-function mapVideo(v: BackendVideo): Video {
+// ── Row mappers ───────────────────────────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapVideo(row: any): Video {
   return {
-    id: v.id,
-    name: v.name,
-    thumbnail: v.thumbnail_path || 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=400&h=225&fit=crop',
-    warehouse: v.warehouse,
-    brand: v.brand,
-    uploadTime: v.created_at,
-    duration: v.duration ? formatDuration(v.duration) : '0:00',
-    resolution: v.resolution || 'Unknown',
-    status: mapVideoStatus(v.status),
-    fileSize: v.file_size ? `${(v.file_size / 1024 / 1024).toFixed(1)} MB` : '—',
+    id: row.id,
+    name: row.name,
+    thumbnail: row.thumbnail_path || 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=400&h=225&fit=crop',
+    warehouse: row.warehouse ?? '',
+    brand: row.brand ?? '',
+    uploadTime: row.created_at,
+    duration: row.duration ? formatDuration(row.duration) : '0:00',
+    resolution: row.resolution || 'Unknown',
+    status: mapVideoStatus(row.status),
+    fileSize: row.file_size ? `${(row.file_size / 1024 / 1024).toFixed(1)} MB` : '—',
   }
 }
 
-function mapDatasetImage(d: BackendDatasetImage): DatasetImage {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapDatasetImage(row: any): DatasetImage {
   return {
-    id: d.id,
-    name: d.image_name ?? d.file_path.split('/').pop() ?? d.id,
-    preview: d.file_path,
+    id: row.id,
+    name: row.image_name ?? row.file_path?.split('/').pop() ?? row.id,
+    preview: row.file_path,
     sourceVideo: '',
-    status: d.split_type === 'train' ? 'Training' : d.split_type === 'val' ? 'Validation' : 'Pending',
-    createdDate: d.created_at,
+    status: row.split_type === 'train' ? 'Training' : row.split_type === 'val' ? 'Validation' : 'Pending',
+    createdDate: row.created_at,
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapTrainingJob(row: any): AIModel {
+  const statusMap: Record<string, AIModel['status']> = {
+    queued: 'Not Trained', running: 'Training', completed: 'Trained',
+    failed: 'Not Trained', cancelled: 'Not Trained',
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    type: 'YOLO',
+    description: `Model: ${row.model_template}`,
+    status: statusMap[row.status] ?? 'Not Trained',
+    version: 'v1',
+    lastUpdated: row.created_at,
+    accuracy: row.accuracy ?? undefined,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapWarehouse(row: any): Warehouse {
+  return { id: row.id, name: row.name, location: row.location ?? '', createdAt: row.created_at }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapBrand(row: any): Brand {
+  return { id: row.id, name: row.name, code: row.code ?? '', createdAt: row.created_at }
 }
 
 function mapVideoStatus(s: string): Video['status'] {
   const map: Record<string, Video['status']> = {
-    pending: 'Uploaded',
-    processing: 'Processing',
-    ready: 'Ready',
-    failed: 'Failed',
+    pending: 'Uploaded', processing: 'Processing', ready: 'Ready', failed: 'Failed',
   }
-  return map[s.toLowerCase()] ?? 'Uploaded'
-}
-
-function mapTrainingJobToModel(j: BackendTrainingJob): AIModel {
-  const statusMap: Record<string, AIModel['status']> = {
-    queued: 'Not Trained',
-    running: 'Training',
-    completed: 'Trained',
-    failed: 'Not Trained',
-    cancelled: 'Not Trained',
-  }
-  return {
-    id: j.id,
-    name: j.name,
-    type: 'YOLO',
-    description: `Model: ${j.model_template}`,
-    status: statusMap[j.status] ?? 'Not Trained',
-    version: 'v1',
-    lastUpdated: j.created_at,
-    accuracy: j.accuracy ?? undefined,
-  }
+  return map[s?.toLowerCase()] ?? 'Uploaded'
 }
 
 function formatDuration(seconds: number): string {
