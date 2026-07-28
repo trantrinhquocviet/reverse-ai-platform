@@ -87,32 +87,21 @@ export const api = {
     },
 
     upload: async (file: File, meta: { warehouse: string; brand: string }) => {
-      // 1. Presigned URL from backend (no auth required)
-      const presignRes = await fetch(
-        `${API_URL}/videos/presign-upload?filename=${encodeURIComponent(file.name)}`,
-      )
-      if (!presignRes.ok) throw new Error('Failed to get upload URL')
-      const { upload_url, public_url: fileUrl } = await presignRes.json() as {
-        upload_url: string; storage_path: string; public_url: string
-      }
+      // 1. Upload directly to Supabase Storage (bucket allows anon uploads)
+      const storagePath = `${crypto.randomUUID()}/${file.name}`
+      const { error: uploadError } = await supabase.storage
+        .from('videos')
+        .upload(storagePath, file, { contentType: file.type || 'video/mp4', upsert: false })
+      if (uploadError) throw new Error(uploadError.message)
 
-      // 2. PUT file directly to Supabase Storage (no JWT needed — signed URL)
-      const uploadRes = await fetch(upload_url, {
-        method: 'PUT',
-        body: file,
-        headers: { 'Content-Type': file.type || 'video/mp4' },
-      })
-      if (!uploadRes.ok) {
-        const err = await uploadRes.json().catch(() => ({})) as { message?: string }
-        throw new Error(err.message ?? `Storage upload failed: ${uploadRes.status}`)
-      }
+      const { data: { publicUrl } } = supabase.storage.from('videos').getPublicUrl(storagePath)
 
-      // 3. Insert video record in Supabase DB
+      // 2. Insert video record in Supabase DB
       const { data, error } = await supabase.from('videos').insert({
         name: file.name,
         warehouse: meta.warehouse,
         brand: meta.brand,
-        file_path: fileUrl,
+        file_path: publicUrl,
         status: 'pending',
       }).select().single()
       if (error) throw new Error(error.message)
