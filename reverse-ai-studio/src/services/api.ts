@@ -114,14 +114,55 @@ export const api = {
       return mapVideo(data)
     },
 
-    importFromUrl: async (payload: { url: string; name?: string; warehouse: string; brand: string }) => {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/import-video-url`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      if (!res.ok) throw new Error('URL import failed')
-      return res.json() as Promise<{ video_id: string; message: string }>
+    importFromUrl: async (
+      payload: { url: string; name?: string; warehouse: string; brand: string },
+      onProgress?: (percent: number, stage: 'downloading' | 'uploading') => void,
+    ) => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.')
+
+      // 1. Download video from URL with progress tracking
+      const response = await fetch(payload.url)
+      if (!response.ok) throw new Error(`Không thể tải video: ${response.status} ${response.statusText}`)
+
+      const contentLength = Number(response.headers.get('content-length') ?? 0)
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('Không thể đọc stream từ URL')
+
+      const chunks: Uint8Array[] = []
+      let received = 0
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+        received += value.length
+        if (contentLength > 0) onProgress?.(Math.round((received / contentLength) * 50), 'downloading')
+      }
+      const blob = new Blob(chunks, { type: response.headers.get('content-type') || 'video/mp4' })
+
+      // 2. Upload to Supabase Storage
+      const fileName = payload.name || payload.url.split('/').pop()?.split('?')[0] || 'imported-video.mp4'
+      const storagePath = `${crypto.randomUUID()}/${fileName}`
+      const { error: storageError } = await supabase.storage
+        .from('videos')
+        .upload(storagePath, blob, {
+          upsert: false,
+          onUploadProgress: (e) => onProgress?.(50 + Math.round((e.loaded / e.total) * 50), 'uploading'),
+        })
+      if (storageError) throw new Error(storageError.message)
+
+      const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${storagePath}`
+
+      // 3. Insert DB record
+      const { data, error } = await supabase.from('videos').insert({
+        name: fileName,
+        warehouse: payload.warehouse,
+        brand: payload.brand,
+        file_path: publicUrl,
+        status: 'pending',
+      }).select().single()
+      if (error) throw new Error(error.message)
+      return mapVideo(data)
     },
   },
 

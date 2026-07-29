@@ -394,16 +394,33 @@ function ImportUrlTab({ warehouses, brands, onClose }: { warehouses: string[]; b
   const [warehouse, setWarehouse] = useState('')
   const [brand, setBrand] = useState('')
   const [error, setError] = useState('')
-  const importMutation = useImportVideoFromUrl()
+  const [importing, setImporting] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [stage, setStage] = useState<'downloading' | 'uploading'>('downloading')
+  const queryClient = useQueryClient()
 
   const isValidUrl = (v: string) => { try { new URL(v); return true } catch { return false } }
 
   const handleSubmit = async () => {
-    if (!isValidUrl(url)) { setError('Please enter a valid URL'); return }
+    if (!isValidUrl(url)) { setError('URL không hợp lệ'); return }
     setError('')
-    await importMutation.mutateAsync({ url, name: name || undefined, warehouse, brand })
-    onClose()
+    setImporting(true)
+    setProgress(0)
+    try {
+      await api.videos.importFromUrl(
+        { url, name: name || undefined, warehouse, brand },
+        (pct, s) => { setProgress(pct); setStage(s) },
+      )
+      await queryClient.invalidateQueries({ queryKey: ['videos'] })
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import thất bại')
+    } finally {
+      setImporting(false)
+    }
   }
+
+  const stageLabel = stage === 'downloading' ? 'Đang tải video từ URL...' : 'Đang upload lên storage...'
 
   return (
     <div className="space-y-4">
@@ -416,22 +433,41 @@ function ImportUrlTab({ warehouses, brands, onClose }: { warehouses: string[]; b
             placeholder="https://example.com/video.mp4"
             value={url}
             onChange={(e) => { setUrl(e.target.value); setError('') }}
-            className="w-full bg-[#111118] border border-[#1e1e2a] rounded-[8px] pl-9 pr-3 py-2 text-sm text-[#f0f0f5] placeholder-[#55556a] outline-none focus:border-[#7c6af7] transition-colors"
+            disabled={importing}
+            className="w-full bg-[#111118] border border-[#1e1e2a] rounded-[8px] pl-9 pr-3 py-2 text-sm text-[#f0f0f5] placeholder-[#55556a] outline-none focus:border-[#7c6af7] transition-colors disabled:opacity-50"
           />
         </div>
         {error && <p className="text-xs text-[#f87171]">{error}</p>}
-        <p className="text-[11px] text-[#55556a]">Direct link to MP4, MOV, AVI file. The system will download it automatically.</p>
+        <p className="text-[11px] text-[#55556a]">Direct link to MP4, MOV, AVI. URL phải cho phép truy cập công khai (CORS).</p>
       </div>
+
       <div className="space-y-1">
-        <label className="text-xs font-medium text-[#8888a8]">Video Name <span className="text-[#55556a]">(optional)</span></label>
+        <label className="text-xs font-medium text-[#8888a8]">Tên video <span className="text-[#55556a]">(tuỳ chọn)</span></label>
         <input
           type="text"
-          placeholder="Leave blank to use filename from URL"
+          placeholder="Để trống để dùng tên file từ URL"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="w-full bg-[#111118] border border-[#1e1e2a] rounded-[8px] px-3 py-2 text-sm text-[#f0f0f5] placeholder-[#55556a] outline-none focus:border-[#7c6af7] transition-colors"
+          disabled={importing}
+          className="w-full bg-[#111118] border border-[#1e1e2a] rounded-[8px] px-3 py-2 text-sm text-[#f0f0f5] placeholder-[#55556a] outline-none focus:border-[#7c6af7] transition-colors disabled:opacity-50"
         />
       </div>
+
+      {importing && (
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs text-[#8888a8]">
+            <span>{stageLabel}</span>
+            <span>{progress}%</span>
+          </div>
+          <div className="w-full bg-[#2a2a38] rounded-full h-2 overflow-hidden">
+            <div
+              className="h-2 rounded-full bg-[#7c6af7] transition-all duration-200"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       <Select label="Warehouse" value={warehouse} onChange={(e) => setWarehouse(e.target.value)}>
         <option value="">Select warehouse...</option>
         {warehouses.map((w) => <option key={w} value={w}>{w}</option>)}
@@ -441,11 +477,11 @@ function ImportUrlTab({ warehouses, brands, onClose }: { warehouses: string[]; b
         {brands.map((b) => <option key={b} value={b}>{b}</option>)}
       </Select>
       <div className="flex gap-2 justify-end pt-2">
-        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button variant="ghost" onClick={onClose} disabled={importing}>Cancel</Button>
         <Button
           variant="primary"
-          disabled={!url}
-          loading={importMutation.isPending}
+          disabled={!url || importing}
+          loading={importing}
           leftIcon={<Link2 className="w-4 h-4" />}
           onClick={handleSubmit}
         >
