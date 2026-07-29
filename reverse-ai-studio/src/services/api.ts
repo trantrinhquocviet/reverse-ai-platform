@@ -125,7 +125,9 @@ export const api = {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.')
 
-      const fileName = payload.name || payload.url.split('/').pop()?.split('?')[0] || 'imported-video.mp4'
+      const driveMatch = payload.url.match(/drive\.google\.com\/file\/d\/([^/]+)/)
+      const defaultName = driveMatch ? `gdrive-${driveMatch[1].slice(0, 8)}.mp4` : (payload.url.split('/').pop()?.split('?')[0] || 'imported-video.mp4')
+      const fileName = payload.name || defaultName
 
       // Proxy qua Vercel serverless function để tránh CORS
       onProgress?.(10, 'downloading')
