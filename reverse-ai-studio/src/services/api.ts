@@ -87,22 +87,12 @@ export const api = {
     },
 
     upload: async (file: File, meta: { warehouse: string; brand: string }) => {
-      // 1. Upload directly to Supabase Storage via fetch (bypasses JWT validation)
       const storagePath = `${crypto.randomUUID()}/${file.name}`
-      const uploadUrl = `${SUPABASE_URL}/storage/v1/object/videos/${storagePath}`
-      const uploadRes = await fetch(uploadUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-          'Content-Type': file.type || 'video/mp4',
-          'x-upsert': 'false',
-        },
-        body: file,
-      })
-      if (!uploadRes.ok) {
-        const err = await uploadRes.json().catch(() => ({})) as { message?: string }
-        throw new Error(err.message ?? `Upload failed: ${uploadRes.status}`)
-      }
+
+      const { error: storageError } = await supabase.storage
+        .from('videos')
+        .upload(storagePath, file, { upsert: false })
+      if (storageError) throw new Error(storageError.message)
 
       const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${storagePath}`
 
