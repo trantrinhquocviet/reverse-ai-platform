@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
+import { api } from '@/services/api'
 import { Upload, Search, Trash2, Video, LayoutGrid, List, Filter, Link2 } from 'lucide-react'
 import { useVideos, useDeleteVideo, useFilterOptions, useUploadVideo, useImportVideoFromUrl } from '@/hooks/useVideos'
 import { Button } from '@/components/Button'
@@ -294,12 +296,25 @@ function UploadFileTab({ warehouses, brands, onClose }: { warehouses: string[]; 
   const [file, setFile] = useState<File | null>(null)
   const [warehouse, setWarehouse] = useState('')
   const [brand, setBrand] = useState('')
-  const uploadMutation = useUploadVideo()
+  const [progress, setProgress] = useState(0)
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState('')
+  const queryClient = useQueryClient()
 
   const handleSubmit = async () => {
     if (!file) return
-    await uploadMutation.mutateAsync({ file, warehouse, brand })
-    onClose()
+    setError('')
+    setUploading(true)
+    setProgress(0)
+    try {
+      await api.videos.upload(file, { warehouse, brand }, setProgress)
+      await queryClient.invalidateQueries({ queryKey: ['videos'] })
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Upload failed')
+    } finally {
+      setUploading(false)
+    }
   }
 
   return (
@@ -312,7 +327,7 @@ function UploadFileTab({ warehouses, brands, onClose }: { warehouses: string[]; 
           'border-2 border-dashed rounded-[12px] p-8 text-center transition-colors cursor-pointer',
           dragging ? 'border-[#7c6af7] bg-[#7c6af710]' : 'border-[#2a2a38] hover:border-[#3a3a4e]'
         )}
-        onClick={() => document.getElementById('video-upload-input')?.click()}
+        onClick={() => !uploading && document.getElementById('video-upload-input')?.click()}
       >
         <input
           id="video-upload-input"
@@ -331,6 +346,24 @@ function UploadFileTab({ warehouses, brands, onClose }: { warehouses: string[]; 
           </>
         )}
       </div>
+
+      {uploading && (
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs text-[#8888a8]">
+            <span>Uploading...</span>
+            <span>{progress}%</span>
+          </div>
+          <div className="w-full bg-[#2a2a38] rounded-full h-2 overflow-hidden">
+            <div
+              className="h-2 rounded-full bg-[#7c6af7] transition-all duration-200"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {error && <p className="text-red-400 text-xs">{error}</p>}
+
       <Select label="Warehouse" value={warehouse} onChange={(e) => setWarehouse(e.target.value)}>
         <option value="">Select warehouse...</option>
         {warehouses.map((w) => <option key={w} value={w}>{w}</option>)}
@@ -340,11 +373,11 @@ function UploadFileTab({ warehouses, brands, onClose }: { warehouses: string[]; 
         {brands.map((b) => <option key={b} value={b}>{b}</option>)}
       </Select>
       <div className="flex gap-2 justify-end pt-2">
-        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button variant="ghost" onClick={onClose} disabled={uploading}>Cancel</Button>
         <Button
           variant="primary"
-          disabled={!file}
-          loading={uploadMutation.isPending}
+          disabled={!file || uploading}
+          loading={uploading}
           leftIcon={<Upload className="w-4 h-4" />}
           onClick={handleSubmit}
         >

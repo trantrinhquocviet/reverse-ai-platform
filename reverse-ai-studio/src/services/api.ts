@@ -86,7 +86,7 @@ export const api = {
       return { success: true, id }
     },
 
-    upload: async (file: File, meta: { warehouse: string; brand: string }) => {
+    upload: async (file: File, meta: { warehouse: string; brand: string }, onProgress?: (percent: number) => void) => {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.')
 
@@ -94,7 +94,10 @@ export const api = {
 
       const { error: storageError } = await supabase.storage
         .from('videos')
-        .upload(storagePath, file, { upsert: false })
+        .upload(storagePath, file, {
+          upsert: false,
+          onUploadProgress: onProgress ? (e) => onProgress(Math.round((e.loaded / e.total) * 100)) : undefined,
+        })
       if (storageError) throw new Error(storageError.message)
 
       const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${storagePath}`
