@@ -90,6 +90,8 @@ export const api = {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.')
 
+      // Extract video duration and file size before upload
+      const duration = await getVideoDuration(file)
       const storagePath = `${crypto.randomUUID()}/${file.name}`
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -103,12 +105,13 @@ export const api = {
 
       const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${storagePath}`
 
-      // 2. Insert video record in Supabase DB
       const { data, error } = await supabase.from('videos').insert({
         name: file.name,
         warehouse: meta.warehouse,
         brand: meta.brand,
         file_path: publicUrl,
+        file_size: file.size,
+        duration: duration ?? null,
         status: 'pending',
       }).select().single()
       if (error) throw new Error(error.message)
@@ -314,4 +317,18 @@ function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = Math.floor(seconds % 60)
   return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+function getVideoDuration(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video')
+    video.preload = 'metadata'
+    const url = URL.createObjectURL(file)
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(url)
+      resolve(isFinite(video.duration) ? video.duration : null)
+    }
+    video.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
+    video.src = url
+  })
 }
