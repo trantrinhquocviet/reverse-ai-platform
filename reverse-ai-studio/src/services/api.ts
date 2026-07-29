@@ -92,12 +92,13 @@ export const api = {
 
       const storagePath = `${crypto.randomUUID()}/${file.name}`
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const uploadOptions: any = { upsert: false }
+      if (onProgress) uploadOptions.onUploadProgress = (e: { loaded: number; total: number }) => onProgress(Math.round((e.loaded / e.total) * 100))
+
       const { error: storageError } = await supabase.storage
         .from('videos')
-        .upload(storagePath, file, {
-          upsert: false,
-          onUploadProgress: onProgress ? (e) => onProgress(Math.round((e.loaded / e.total) * 100)) : undefined,
-        })
+        .upload(storagePath, file, uploadOptions)
       if (storageError) throw new Error(storageError.message)
 
       const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${storagePath}`
@@ -146,7 +147,7 @@ export const api = {
       }
       onProgress?.(100, 'uploading')
       const data = await res.json() as { id: string; name: string; file_path: string }
-      return { id: data.id, name: data.name, file_path: data.file_path } as ReturnType<typeof mapVideo>
+      return { id: data.id, name: data.name, file_path: data.file_path } as unknown as ReturnType<typeof mapVideo>
     },
   },
 
