@@ -121,48 +121,32 @@ export const api = {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.')
 
-      // 1. Download video from URL with progress tracking
-      const response = await fetch(payload.url)
-      if (!response.ok) throw new Error(`Không thể tải video: ${response.status} ${response.statusText}`)
-
-      const contentLength = Number(response.headers.get('content-length') ?? 0)
-      const reader = response.body?.getReader()
-      if (!reader) throw new Error('Không thể đọc stream từ URL')
-
-      const chunks: Uint8Array[] = []
-      let received = 0
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        chunks.push(value)
-        received += value.length
-        if (contentLength > 0) onProgress?.(Math.round((received / contentLength) * 50), 'downloading')
-      }
-      const blob = new Blob(chunks, { type: response.headers.get('content-type') || 'video/mp4' })
-
-      // 2. Upload to Supabase Storage
       const fileName = payload.name || payload.url.split('/').pop()?.split('?')[0] || 'imported-video.mp4'
-      const storagePath = `${crypto.randomUUID()}/${fileName}`
-      const { error: storageError } = await supabase.storage
-        .from('videos')
-        .upload(storagePath, blob, {
-          upsert: false,
-          onUploadProgress: (e) => onProgress?.(50 + Math.round((e.loaded / e.total) * 50), 'uploading'),
-        })
-      if (storageError) throw new Error(storageError.message)
 
-      const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${storagePath}`
-
-      // 3. Insert DB record
-      const { data, error } = await supabase.from('videos').insert({
-        name: fileName,
-        warehouse: payload.warehouse,
-        brand: payload.brand,
-        file_path: publicUrl,
-        status: 'pending',
-      }).select().single()
-      if (error) throw new Error(error.message)
-      return mapVideo(data)
+      // Proxy qua Vercel serverless function để tránh CORS
+      onProgress?.(10, 'downloading')
+      const res = await fetch('/api/import-video', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          url: payload.url,
+          fileName,
+          warehouse: payload.warehouse,
+          brand: payload.brand,
+          userId: session.user.id,
+        }),
+      })
+      onProgress?.(90, 'uploading')
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: string }
+        throw new Error(err.error ?? `Import failed: ${res.status}`)
+      }
+      onProgress?.(100, 'uploading')
+      const data = await res.json() as { id: string; name: string; file_path: string }
+      return { id: data.id, name: data.name, file_path: data.file_path } as ReturnType<typeof mapVideo>
     },
   },
 
