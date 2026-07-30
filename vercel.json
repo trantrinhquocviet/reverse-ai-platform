@@ -1,7 +1,7 @@
 {
   "buildCommand": "cd reverse-ai-studio && npm ci && npm run build",
   "outputDirectory": "reverse-ai-studio/dist",
-  "installCommand": "cd reverse-ai-studio && npm ci",
+  "installCommand": "npm ci && cd reverse-ai-studio && npm ci",
   "framework": null,
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
