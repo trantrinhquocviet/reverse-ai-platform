@@ -1,5 +1,5 @@
 {
-  "outputDirectory": "reverse-ai-studio/dist",
+  "rootDirectory": "reverse-ai-studio",
   "routes": [
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }

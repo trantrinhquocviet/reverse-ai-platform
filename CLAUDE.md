@@ -120,4 +120,4 @@ VITE_API_URL=http://localhost:8000/api/v1
 
 - **Frontend**: Deployed to Vercel (`reverse-ai-studio/`). URL: `https://reverse-ai-platform.vercel.app`
 - **Backend**: Deployed to Vercel as a Python serverless function. Entry point: `backend/api/index.py` → `app.main:app`. URL: `https://reverse-ai-platform.vercel.app/api/v1`
-- **Push workflow**: Always ask before `git push origin main` or `vercel deploy`.
+- **Push workflow**: Always ask for explicit confirmation before running `git push origin main` or `vercel deploy`. Once the user confirms ("có", "yes", "push đi", etc.), proceed immediately with the push — do not ask again.
