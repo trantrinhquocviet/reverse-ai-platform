@@ -3,7 +3,13 @@
   "outputDirectory": "reverse-ai-studio/dist",
   "installCommand": "npm ci && cd reverse-ai-studio && npm ci",
   "framework": null,
+  "functions": {
+    "api/import-video.js": {
+      "runtime": "@vercel/node@3.2.20"
+    }
+  },
   "rewrites": [
+    { "source": "/api/import-video", "destination": "/api/import-video.js" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
