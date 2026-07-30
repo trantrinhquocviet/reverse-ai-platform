@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "build": "cd reverse-ai-studio && npm install && npm run build"
+  },
   "dependencies": {
     "@vercel/node": "^3.2.20"
   },
