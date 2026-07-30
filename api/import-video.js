@@ -1,29 +1,22 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node'
-
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL ?? ''
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? ''
 
-function resolveDownloadUrl(url: string): { downloadUrl: string } {
-  // Google Drive: /file/d/{id}/view or /file/d/{id}/preview
+function resolveDownloadUrl(url) {
   const driveMatch = url.match(/drive\.google\.com\/file\/d\/([^/]+)/)
   if (driveMatch) {
     return { downloadUrl: `https://drive.google.com/uc?export=download&id=${driveMatch[1]}&confirm=t` }
   }
 
-  // Google Drive open?id= format
   const driveOpenMatch = url.match(/drive\.google\.com\/open\?id=([^&]+)/)
   if (driveOpenMatch) {
     return { downloadUrl: `https://drive.google.com/uc?export=download&id=${driveOpenMatch[1]}&confirm=t` }
   }
 
-  // Dropbox: ?dl=0 → ?dl=1, or dropbox.com/s/ links
   if (url.includes('dropbox.com')) {
     return { downloadUrl: url.replace('?dl=0', '?dl=1').replace('www.dropbox.com', 'dl.dropboxusercontent.com') }
   }
 
-  // OneDrive/SharePoint share link → direct download
   if (url.includes('1drv.ms') || url.includes('onedrive.live.com') || url.includes('sharepoint.com')) {
-    // Convert to direct download by adding download=1 param
     const u = new URL(url)
     u.searchParams.set('download', '1')
     return { downloadUrl: u.toString() }
@@ -32,23 +25,16 @@ function resolveDownloadUrl(url: string): { downloadUrl: string } {
   return { downloadUrl: url }
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
 
-  const { url, fileName, warehouse, brand, userId } = req.body as {
-    url: string
-    fileName: string
-    warehouse: string
-    brand: string
-    userId: string
-  }
+  const { url, fileName, warehouse, brand, userId } = req.body
 
   if (!url || !fileName) return res.status(400).json({ error: 'url and fileName are required' })
 
   try {
     const { downloadUrl } = resolveDownloadUrl(url)
 
-    // 1. Download video — follow redirects, handle Google Drive confirm cookie
     const videoRes = await fetch(downloadUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0',
@@ -67,7 +53,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const videoBuffer = await videoRes.arrayBuffer()
     if (videoBuffer.byteLength === 0) throw new Error('File tải về rỗng — kiểm tra quyền truy cập URL.')
 
-    // 2. Upload to Supabase Storage
     const storagePath = `${crypto.randomUUID()}/${fileName}`
     const uploadRes = await fetch(
       `${SUPABASE_URL}/storage/v1/object/videos/${storagePath}`,
@@ -83,13 +68,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     )
     if (!uploadRes.ok) {
-      const err = await uploadRes.json().catch(() => ({})) as { message?: string }
+      const err = await uploadRes.json().catch(() => ({}))
       throw new Error(err.message ?? `Storage upload failed: ${uploadRes.status}`)
     }
 
     const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${storagePath}`
 
-    // 3. Insert DB record
     const dbRes = await fetch(`${SUPABASE_URL}/rest/v1/videos`, {
       method: 'POST',
       headers: {
@@ -109,10 +93,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }),
     })
     if (!dbRes.ok) {
-      const err = await dbRes.json().catch(() => ({})) as { message?: string }
+      const err = await dbRes.json().catch(() => ({}))
       throw new Error(err.message ?? 'DB insert failed')
     }
-    const [video] = await dbRes.json() as Array<{ id: string; name: string }>
+    const [video] = await dbRes.json()
 
     res.status(200).json({ id: video.id, name: video.name, file_path: publicUrl })
   } catch (err) {
