@@ -4,6 +4,6 @@
   "installCommand": "cd reverse-ai-studio && npm ci",
   "framework": null,
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
