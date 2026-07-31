@@ -7,11 +7,13 @@
       "config": { "distDir": "reverse-ai-studio/dist" }
     },
     {
-      "src": "api/import-video.js",
-      "use": "@vercel/node"
+      "src": "backend/api/index.py",
+      "use": "@vercel/python",
+      "config": { "maxLambdaSize": "50mb" }
     }
   ],
   "routes": [
+    { "src": "/api/(.*)", "dest": "backend/api/index.py" },
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
