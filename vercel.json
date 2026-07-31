@@ -4,7 +4,7 @@
     {
       "src": "reverse-ai-studio/package.json",
       "use": "@vercel/static-build",
-      "config": { "distDir": "dist" }
+      "config": { "distDir": "reverse-ai-studio/dist" }
     },
     {
       "src": "api/import-video.js",
