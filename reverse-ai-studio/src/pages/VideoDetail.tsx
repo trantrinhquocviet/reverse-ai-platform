@@ -9,6 +9,7 @@ import { Input } from '@/components/Input'
 import { formatDateTime } from '@/utils/formatters'
 import { supabase } from '@/services/api'
 import { BrowserMultiFormatReader } from '@zxing/library'
+import Tesseract from 'tesseract.js'
 import type { AIAnalysisResult } from '@/types'
 import type { LucideIcon } from 'lucide-react'
 
@@ -75,6 +76,22 @@ export function VideoDetail() {
     } catch {
       // NotFoundException is normal when no barcode in frame
       return []
+    }
+  }
+
+  const ocrCanvas = async (canvas: HTMLCanvasElement): Promise<{ text: string; codes: string[] }> => {
+    try {
+      const { data } = await Tesseract.recognize(canvas, 'eng', { logger: () => {} })
+      const text = data.text
+      // Extract any sequence: letters+digits 8+ chars (tracking codes, order IDs)
+      const codes = [...new Set(
+        [...text.matchAll(/[A-Z0-9]{3,}[-]?[A-Z0-9]{6,}/g)]
+          .map(m => m[0])
+          .filter(c => c.length >= 8)
+      )]
+      return { text: text.trim(), codes }
+    } catch {
+      return { text: '', codes: [] }
     }
   }
 
@@ -147,15 +164,26 @@ export function VideoDetail() {
         const filename = `frame_${String(Math.round(ts)).padStart(6, '0')}.jpg`
         try {
           const { base64, canvas } = await extractFrameBase64(videoEl, ts)
-          // ZXing: decode barcode/QR client-side (free, instant)
-          const clientBarcodes = await decodeBarcodesFromCanvas(canvas)
+          // Run ZXing + Tesseract in parallel
+          const [clientBarcodes, ocrResult] = await Promise.all([
+            decodeBarcodesFromCanvas(canvas),
+            ocrCanvas(canvas),
+          ])
           const res = await fetch('/api/analyze_frame', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${session.access_token}`,
             },
-            body: JSON.stringify({ image_base64: base64, video_id: id, frame_timestamp: ts, filename, client_barcodes: clientBarcodes }),
+            body: JSON.stringify({
+              image_base64: base64,
+              video_id: id,
+              frame_timestamp: ts,
+              filename,
+              client_barcodes: clientBarcodes,
+              client_tracking_codes: ocrResult.codes,
+              client_label_text: ocrResult.text ? [ocrResult.text] : [],
+            }),
           })
           if (!res.ok) {
             const err = await res.json().catch(() => ({})) as { detail?: string }

@@ -50,8 +50,9 @@ class AnalyzeFrameRequest(BaseModel):
     video_id: str
     frame_timestamp: float
     filename: str
-    # Optional: client-side ZXing barcode results merged in before saving
     client_barcodes: list[str] = []
+    client_tracking_codes: list[str] = []
+    client_label_text: list[str] = []
 
 
 async def verify_jwt(token: str) -> dict:
@@ -178,11 +179,18 @@ async def analyze_frame(
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"OpenRouter API error: {e.response.text}")
 
-    # Merge client-side ZXing barcode results (deduplicated)
-    existing = set(ai_result.get("barcodes") or [])
-    for code in request.client_barcodes:
-        existing.add(code)
-    ai_result["barcodes"] = list(existing)
+    # Merge client-side results (ZXing barcodes + Tesseract OCR tracking codes)
+    barcodes = set(ai_result.get("barcodes") or [])
+    barcodes.update(request.client_barcodes)
+    ai_result["barcodes"] = list(barcodes)
+
+    tracking = set(ai_result.get("tracking_codes") or [])
+    tracking.update(request.client_tracking_codes)
+    ai_result["tracking_codes"] = list(tracking)
+
+    label_text = list(ai_result.get("label_text") or [])
+    label_text.extend(request.client_label_text)
+    ai_result["label_text"] = label_text[:5]  # cap to avoid huge payloads
 
     # Upload frame to Supabase Storage
     try:
