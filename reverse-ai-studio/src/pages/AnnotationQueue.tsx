@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw } from 'lucide-react'
+import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { supabase } from '@/services/api'
 
@@ -102,6 +102,28 @@ function PackagingBadge({ status }: { status?: string }) {
   )
 }
 
+function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 p-2 rounded-full bg-[#ffffff15] hover:bg-[#ffffff25] text-white transition-colors"
+      >
+        <X className="w-5 h-5" />
+      </button>
+      <img
+        src={src}
+        alt={alt}
+        className="max-w-full max-h-full object-contain rounded-[8px]"
+        onClick={e => e.stopPropagation()}
+      />
+    </div>
+  )
+}
+
 function FrameCard({ frame, reviewerId, onReviewed }: {
   frame: DatasetFrame
   reviewerId: string
@@ -109,6 +131,7 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
 }) {
   const queryClient = useQueryClient()
   const [localStatus, setLocalStatus] = useState(frame.review_status)
+  const [lightbox, setLightbox] = useState(false)
 
   const review = useMutation({
     mutationFn: (status: 'approved' | 'rejected') =>
@@ -125,14 +148,24 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
   const barcodes = ai?.barcodes?.filter(Boolean) ?? []
 
   return (
+    <>
+      {lightbox && frame.file_path && (
+        <Lightbox src={frame.file_path} alt={frame.image_name} onClose={() => setLightbox(false)} />
+      )}
     <div className="bg-[#0d0d14] border border-[#1e1e2a] rounded-[12px] overflow-hidden hover:border-[#2a2a3a] transition-colors">
       {/* Frame image */}
-      <div className="aspect-video bg-[#1a1a24] overflow-hidden relative">
+      <div
+        className="aspect-video bg-[#1a1a24] overflow-hidden relative group cursor-zoom-in"
+        onClick={() => frame.file_path && setLightbox(true)}
+      >
         {frame.file_path ? (
           <img src={frame.file_path} alt={frame.image_name} className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-[#55556a] text-xs">No preview</div>
         )}
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+          <ZoomIn className="w-6 h-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+        </div>
         <div className="absolute top-2 left-2">
           <StatusBadge status={localStatus} />
         </div>
@@ -209,6 +242,7 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
         </div>
       </div>
     </div>
+    </>
   )
 }
 
