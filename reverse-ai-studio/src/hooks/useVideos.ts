@@ -38,6 +38,18 @@ export function useImportVideoFromUrl() {
   })
 }
 
+export function useUpdateVideo() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { name?: string; warehouse?: string; brand?: string } }) =>
+      api.videos.update(id, data),
+    onSuccess: (_result, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ['videos'] })
+      queryClient.invalidateQueries({ queryKey: ['video', id] })
+    },
+  })
+}
+
 export function useDeleteVideo() {
   const queryClient = useQueryClient()
   return useMutation({

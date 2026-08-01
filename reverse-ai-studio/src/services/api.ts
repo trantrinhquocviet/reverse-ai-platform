@@ -80,6 +80,12 @@ export const api = {
       return mapVideo(data)
     },
 
+    update: async (id: string, data: { name?: string; warehouse?: string; brand?: string }) => {
+      const { data: row, error } = await supabase.from('videos').update(data).eq('id', id).select().single()
+      if (error) throw new Error(error.message)
+      return mapVideo(row)
+    },
+
     delete: async (id: string) => {
       const { error } = await supabase.from('videos').delete().eq('id', id)
       if (error) throw new Error(error.message)
@@ -152,6 +158,14 @@ export const api = {
       }
       onProgress?.(100, 'uploading')
       const data = await res.json() as { id: string; name: string; file_path: string }
+
+      // Best-effort: extract duration from the public URL and persist it
+      if (data.id && data.file_path) {
+        getDurationFromUrl(data.file_path).then((dur) => {
+          if (dur) supabase.from('videos').update({ duration: dur }).eq('id', data.id).then(() => {})
+        })
+      }
+
       return { id: data.id, name: data.name, file_path: data.file_path } as unknown as ReturnType<typeof mapVideo>
     },
   },
@@ -258,11 +272,12 @@ function mapVideo(row: any): Video {
     id: row.id,
     name: row.name,
     thumbnail: row.thumbnail_path || 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=400&h=225&fit=crop',
+    filePath: row.file_path ?? '',
     warehouse: row.warehouse ?? '',
     brand: row.brand ?? '',
     uploadTime: row.created_at,
-    duration: row.duration ? formatDuration(row.duration) : '0:00',
-    resolution: row.resolution || 'Unknown',
+    duration: row.duration ? formatDuration(row.duration) : '—',
+    resolution: row.resolution || '—',
     status: mapVideoStatus(row.status),
     fileSize: row.file_size ? `${(row.file_size / 1024 / 1024).toFixed(1)} MB` : '—',
   }
@@ -332,5 +347,17 @@ function getVideoDuration(file: File): Promise<number | null> {
     }
     video.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
     video.src = url
+  })
+}
+
+function getDurationFromUrl(url: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video')
+    video.preload = 'metadata'
+    video.crossOrigin = 'anonymous'
+    video.onloadedmetadata = () => resolve(isFinite(video.duration) ? video.duration : null)
+    video.onerror = () => resolve(null)
+    video.src = url
+    setTimeout(() => resolve(null), 10000)
   })
 }
