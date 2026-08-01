@@ -26,6 +26,7 @@ import { KnowledgeRules } from '@/pages/KnowledgeRules'
 import { DatasetExplorer } from '@/pages/DatasetExplorer'
 import { DuplicateDetection } from '@/pages/DuplicateDetection'
 import { TrainingCenter } from '@/pages/TrainingCenter'
+import { MiniAITrainer } from '@/pages/MiniAITrainer'
 import { TrainingJobs } from '@/pages/TrainingJobs'
 import { TrainingJobDetail } from '@/pages/TrainingJobDetail'
 import { Experiments } from '@/pages/Experiments'
@@ -75,6 +76,7 @@ function App() {
             <Route path="/duplicate-detection" element={<DuplicateDetection />} />
             {/* Phase 4 — AI Training Center */}
             <Route path="/training-center" element={<TrainingCenter />} />
+            <Route path="/mini-ai-trainer" element={<MiniAITrainer />} />
             <Route path="/training-jobs" element={<TrainingJobs />} />
             <Route path="/training-jobs/:jobId" element={<TrainingJobDetail />} />
             <Route path="/experiments" element={<Experiments />} />

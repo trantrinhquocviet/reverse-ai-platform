@@ -50,6 +50,7 @@ const phase3Items = [
 ]
 
 const trainingItems = [
+  { to: '/mini-ai-trainer', icon: Brain, label: 'Mini AI Trainer' },
   { to: '/training-center', icon: Brain, label: 'Training Center' },
   { to: '/training-jobs', icon: Play, label: 'Training Jobs' },
   { to: '/experiments', icon: FlaskConical, label: 'Experiments' },
