@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X } from 'lucide-react'
+import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { supabase } from '@/services/api'
 
@@ -132,6 +132,10 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
   const queryClient = useQueryClient()
   const [localStatus, setLocalStatus] = useState(frame.review_status)
   const [lightbox, setLightbox] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editTracking, setEditTracking] = useState((frame.ai_result?.tracking_codes ?? []).join('\n'))
+  const [editBarcodes, setEditBarcodes] = useState((frame.ai_result?.barcodes ?? []).join('\n'))
+  const [localAi, setLocalAi] = useState(frame.ai_result)
 
   const review = useMutation({
     mutationFn: (status: 'approved' | 'rejected') =>
@@ -143,7 +147,25 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
     },
   })
 
-  const ai = frame.ai_result
+  const saveEdit = useMutation({
+    mutationFn: async () => {
+      const updated = {
+        ...localAi,
+        tracking_codes: editTracking.split('\n').map(s => s.trim()).filter(Boolean),
+        barcodes: editBarcodes.split('\n').map(s => s.trim()).filter(Boolean),
+      }
+      const { error } = await supabase.from('dataset_images').update({ ai_result: updated }).eq('id', frame.id)
+      if (error) throw new Error(error.message)
+      return updated
+    },
+    onSuccess: (updated) => {
+      setLocalAi(updated)
+      setEditing(false)
+      queryClient.invalidateQueries({ queryKey: ['annotation-frames'] })
+    },
+  })
+
+  const ai = localAi
   const trackingCodes = ai?.tracking_codes?.filter(Boolean) ?? []
   const barcodes = ai?.barcodes?.filter(Boolean) ?? []
 
@@ -178,37 +200,78 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
 
       {/* AI Results */}
       <div className="p-3 space-y-2">
-        <p className="text-[10px] text-[#55556a] truncate">{frame.image_name}</p>
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] text-[#55556a] truncate">{frame.image_name}</p>
+          <button
+            onClick={() => setEditing(e => !e)}
+            className="p-1 rounded hover:bg-[#ffffff10] text-[#55556a] hover:text-[#8888a8] transition-colors"
+          >
+            <Pencil className="w-3 h-3" />
+          </button>
+        </div>
 
-        {trackingCodes.length > 0 && (
-          <div className="bg-[#1a1a24] rounded-[6px] p-2">
-            <p className="text-[9px] text-[#55556a] mb-1">Tracking Code</p>
-            {trackingCodes.map((code, i) => (
-              <p key={i} className="text-[11px] text-[#a89bff] font-mono truncate">{code}</p>
-            ))}
+        {editing ? (
+          <div className="space-y-2">
+            <div>
+              <p className="text-[9px] text-[#55556a] mb-1">Tracking Codes (mỗi dòng 1 mã)</p>
+              <textarea
+                value={editTracking}
+                onChange={e => setEditTracking(e.target.value)}
+                rows={2}
+                className="w-full bg-[#1a1a24] border border-[#2a2a3a] text-[#a89bff] text-[11px] font-mono rounded-[6px] px-2 py-1.5 outline-none focus:border-[#7c6af7] resize-none"
+                placeholder="861850859724"
+              />
+            </div>
+            <div>
+              <p className="text-[9px] text-[#55556a] mb-1">Barcodes (mỗi dòng 1 mã)</p>
+              <textarea
+                value={editBarcodes}
+                onChange={e => setEditBarcodes(e.target.value)}
+                rows={2}
+                className="w-full bg-[#1a1a24] border border-[#2a2a3a] text-[#f0f0f5] text-[11px] font-mono rounded-[6px] px-2 py-1.5 outline-none focus:border-[#7c6af7] resize-none"
+                placeholder="barcode value"
+              />
+            </div>
+            <button
+              onClick={() => saveEdit.mutate()}
+              disabled={saveEdit.isPending}
+              className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-[#7c6af7] hover:bg-[#6b5ce7] text-white text-xs rounded-[6px] transition-colors"
+            >
+              {saveEdit.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+              Lưu chỉnh sửa
+            </button>
           </div>
-        )}
-
-        {barcodes.length > 0 && (
-          <div className="bg-[#1a1a24] rounded-[6px] p-2">
-            <p className="text-[9px] text-[#55556a] mb-1">Barcode</p>
-            {barcodes.map((code, i) => (
-              <p key={i} className="text-[11px] text-[#f0f0f5] font-mono truncate">{code}</p>
-            ))}
-          </div>
-        )}
-
-        {ai?.package_count !== undefined && (
-          <p className="text-[10px] text-[#8888a8]">
-            <span className="text-[#55556a]">Packages:</span> {ai.package_count}
-            {ai.confidence !== undefined && (
-              <span className="ml-2 text-[#55556a]">conf: {Math.round(ai.confidence * 100)}%</span>
+        ) : (
+          <>
+            {trackingCodes.length > 0 && (
+              <div className="bg-[#1a1a24] rounded-[6px] p-2">
+                <p className="text-[9px] text-[#55556a] mb-1">Tracking Code</p>
+                {trackingCodes.map((code, i) => (
+                  <p key={i} className="text-[11px] text-[#a89bff] font-mono truncate">{code}</p>
+                ))}
+              </div>
             )}
-          </p>
-        )}
 
-        {!ai && (
-          <p className="text-[10px] text-[#55556a] italic">No AI result</p>
+            {barcodes.length > 0 && (
+              <div className="bg-[#1a1a24] rounded-[6px] p-2">
+                <p className="text-[9px] text-[#55556a] mb-1">Barcode</p>
+                {barcodes.map((code, i) => (
+                  <p key={i} className="text-[11px] text-[#f0f0f5] font-mono truncate">{code}</p>
+                ))}
+              </div>
+            )}
+
+            {ai?.package_count !== undefined && (
+              <p className="text-[10px] text-[#8888a8]">
+                <span className="text-[#55556a]">Packages:</span> {ai.package_count}
+                {ai.confidence !== undefined && (
+                  <span className="ml-2 text-[#55556a]">conf: {Math.round(ai.confidence * 100)}%</span>
+                )}
+              </p>
+            )}
+
+            {!ai && <p className="text-[10px] text-[#55556a] italic">No AI result</p>}
+          </>
         )}
 
         {/* Actions */}
