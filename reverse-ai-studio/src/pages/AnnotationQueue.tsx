@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save } from 'lucide-react'
+import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save, Video, ChevronDown } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { supabase } from '@/services/api'
 
@@ -26,14 +26,40 @@ interface DatasetFrame {
   annotation_id: string | null
 }
 
-async function fetchFrames(filterStatus: string): Promise<DatasetFrame[]> {
-  // Fetch dataset_images with their latest annotation
-  const { data: images, error } = await supabase
+interface VideoOption {
+  id: string
+  name: string
+  frameCount: number
+}
+
+async function fetchVideosWithFrames(): Promise<VideoOption[]> {
+  const { data, error } = await supabase
+    .from('dataset_images')
+    .select('video_id, videos(id, name)')
+    .order('created_at', { ascending: false })
+  if (error) throw new Error(error.message)
+
+  const map = new Map<string, { name: string; count: number }>()
+  for (const row of data ?? []) {
+    const vid = row.video_id
+    if (!vid) continue
+    const name = (row as any).videos?.name ?? vid
+    const existing = map.get(vid)
+    map.set(vid, { name, count: (existing?.count ?? 0) + 1 })
+  }
+  return Array.from(map.entries()).map(([id, { name, count }]) => ({ id, name, frameCount: count }))
+}
+
+async function fetchFrames(filterStatus: string, videoId: string): Promise<DatasetFrame[]> {
+  let query = supabase
     .from('dataset_images')
     .select('*, annotations(id, status)')
     .order('created_at', { ascending: false })
     .limit(200)
 
+  if (videoId !== 'all') query = query.eq('video_id', videoId)
+
+  const { data: images, error } = await query
   if (error) throw new Error(error.message)
 
   return (images ?? []).map((row: any) => {
@@ -311,6 +337,8 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
 
 export function AnnotationQueue() {
   const [filterStatus, setFilterStatus] = useState<string>('all')
+  const [filterVideo, setFilterVideo] = useState<string>('all')
+  const [videoDropdownOpen, setVideoDropdownOpen] = useState(false)
   const [reviewerId, setReviewerId] = useState('')
   const queryClient = useQueryClient()
 
@@ -321,10 +349,19 @@ export function AnnotationQueue() {
     })
   })
 
-  const { data: frames = [], isLoading, refetch } = useQuery({
-    queryKey: ['annotation-frames', filterStatus],
-    queryFn: () => fetchFrames(filterStatus),
+  const { data: videoOptions = [] } = useQuery({
+    queryKey: ['annotation-videos'],
+    queryFn: fetchVideosWithFrames,
   })
+
+  const { data: frames = [], isLoading, refetch } = useQuery({
+    queryKey: ['annotation-frames', filterStatus, filterVideo],
+    queryFn: () => fetchFrames(filterStatus, filterVideo),
+  })
+
+  const selectedVideoName = filterVideo === 'all'
+    ? 'All Videos'
+    : (videoOptions.find(v => v.id === filterVideo)?.name ?? filterVideo)
 
   const pending = frames.filter(f => f.review_status === 'pending').length
   const approved = frames.filter(f => f.review_status === 'approved').length
@@ -370,22 +407,68 @@ export function AnnotationQueue() {
       )}
 
       {/* Filters */}
-      <div className="flex items-center gap-3">
-        <Filter className="w-3.5 h-3.5 text-[#8888a8]" />
-        {(['all', 'pending', 'approved', 'rejected'] as const).map(s => (
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <Filter className="w-3.5 h-3.5 text-[#8888a8]" />
+          {(['all', 'pending', 'approved', 'rejected'] as const).map(s => (
+            <button
+              key={s}
+              onClick={() => setFilterStatus(s)}
+              className={cn(
+                'px-3 py-1.5 rounded-[6px] text-xs font-medium transition-colors capitalize',
+                filterStatus === s
+                  ? 'bg-[#7c6af7] text-white'
+                  : 'bg-[#1a1a24] text-[#8888a8] hover:text-[#f0f0f5]'
+              )}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+
+        {/* Video filter */}
+        <div className="relative ml-auto">
           <button
-            key={s}
-            onClick={() => setFilterStatus(s)}
-            className={cn(
-              'px-3 py-1.5 rounded-[6px] text-xs font-medium transition-colors capitalize',
-              filterStatus === s
-                ? 'bg-[#7c6af7] text-white'
-                : 'bg-[#1a1a24] text-[#8888a8] hover:text-[#f0f0f5]'
-            )}
+            onClick={() => setVideoDropdownOpen(v => !v)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-[6px] bg-[#1a1a24] border border-[#2a2a3a] text-xs text-[#f0f0f5] hover:border-[#7c6af740] transition-colors max-w-[200px]"
           >
-            {s}
+            <Video className="w-3.5 h-3.5 text-[#8888a8] flex-shrink-0" />
+            <span className="truncate">{selectedVideoName}</span>
+            <ChevronDown className={cn('w-3 h-3 text-[#55556a] flex-shrink-0 transition-transform', videoDropdownOpen && 'rotate-180')} />
           </button>
-        ))}
+          {videoDropdownOpen && (
+            <div className="absolute right-0 top-full mt-1 w-64 bg-[#0d0d14] border border-[#1e1e2a] rounded-[10px] shadow-2xl z-20 overflow-hidden">
+              <div className="max-h-60 overflow-y-auto py-1">
+                <button
+                  onClick={() => { setFilterVideo('all'); setVideoDropdownOpen(false) }}
+                  className={cn(
+                    'w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-[#ffffff06] transition-colors',
+                    filterVideo === 'all' ? 'text-[#a89bff]' : 'text-[#8888a8]'
+                  )}
+                >
+                  <span>All Videos</span>
+                  <span className="text-[10px] text-[#55556a]">{videoOptions.reduce((a, v) => a + v.frameCount, 0)} frames</span>
+                </button>
+                {videoOptions.map(v => (
+                  <button
+                    key={v.id}
+                    onClick={() => { setFilterVideo(v.id); setVideoDropdownOpen(false) }}
+                    className={cn(
+                      'w-full flex items-center justify-between px-3 py-2 text-xs hover:bg-[#ffffff06] transition-colors',
+                      filterVideo === v.id ? 'text-[#a89bff]' : 'text-[#f0f0f5]'
+                    )}
+                  >
+                    <span className="truncate text-left max-w-[160px]">{v.name}</span>
+                    <span className="text-[10px] text-[#55556a] flex-shrink-0 ml-2">{v.frameCount} frames</span>
+                  </button>
+                ))}
+                {videoOptions.length === 0 && (
+                  <p className="px-3 py-4 text-[10px] text-[#55556a] text-center">Chưa có video nào</p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Grid */}
@@ -396,8 +479,10 @@ export function AnnotationQueue() {
       ) : frames.length === 0 ? (
         <div className="text-center py-16 space-y-2">
           <p className="text-[#55556a] text-sm">
-            {filterStatus === 'all'
+            {filterStatus === 'all' && filterVideo === 'all'
               ? 'Chưa có frames nào — chạy AI Processing trên video trước'
+              : filterVideo !== 'all'
+              ? `Không có frame nào ${filterStatus !== 'all' ? `ở trạng thái "${filterStatus}"` : ''} cho video này`
               : `Không có frame nào ở trạng thái "${filterStatus}"`}
           </p>
         </div>
