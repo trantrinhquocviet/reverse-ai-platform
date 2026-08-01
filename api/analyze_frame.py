@@ -24,7 +24,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
-OPENROUTER_MODEL = "google/gemini-2.5-flash:free"
+OPENROUTER_MODEL = "meta-llama/llama-3.2-11b-vision-instruct:free"
 
 VISION_PROMPT = """You are analyzing a warehouse packing video frame. Detect and extract:
 1. Tracking codes / order codes (e.g. TTK3CE-584361784077026534)
