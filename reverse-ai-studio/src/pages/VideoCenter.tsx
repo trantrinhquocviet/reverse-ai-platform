@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { Upload, Search, Trash2, Video, LayoutGrid, List, Filter, Link2 } from 'lucide-react'
+import { Upload, Search, Trash2, Video, LayoutGrid, List, Filter, Link2, CheckCircle2, AlertCircle, X as XIcon } from 'lucide-react'
 import { useVideos, useDeleteVideo, useFilterOptions, useUploadVideo, useImportVideoFromUrl } from '@/hooks/useVideos'
 import { Button } from '@/components/Button'
 import { Input, Select } from '@/components/Input'
@@ -291,40 +291,72 @@ function UploadModal({ open, onClose, warehouses, brands }: { open: boolean; onC
   )
 }
 
+interface FileItem {
+  file: File
+  progress: number
+  status: 'pending' | 'uploading' | 'done' | 'error'
+  error?: string
+}
+
 function UploadFileTab({ warehouses, brands, onClose }: { warehouses: string[]; brands: string[]; onClose: () => void }) {
   const [dragging, setDragging] = useState(false)
-  const [file, setFile] = useState<File | null>(null)
+  const [files, setFiles] = useState<FileItem[]>([])
   const [warehouse, setWarehouse] = useState('')
   const [brand, setBrand] = useState('')
-  const [progress, setProgress] = useState(0)
   const [uploading, setUploading] = useState(false)
-  const [error, setError] = useState('')
   const queryClient = useQueryClient()
 
-  const handleSubmit = async () => {
-    if (!file) return
-    setError('')
-    setUploading(true)
-    setProgress(0)
-    try {
-      await api.videos.upload(file, { warehouse, brand }, setProgress)
-      await queryClient.invalidateQueries({ queryKey: ['videos'] })
-      onClose()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed')
-    } finally {
-      setUploading(false)
-    }
+  const addFiles = (incoming: FileList | null) => {
+    if (!incoming) return
+    const newItems: FileItem[] = Array.from(incoming)
+      .filter(f => f.type.startsWith('video/'))
+      .map(f => ({ file: f, progress: 0, status: 'pending' }))
+    setFiles(prev => {
+      const existingNames = new Set(prev.map(f => f.file.name))
+      return [...prev, ...newItems.filter(f => !existingNames.has(f.file.name))]
+    })
   }
+
+  const removeFile = (idx: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== idx))
+  }
+
+  const handleSubmit = async () => {
+    if (files.length === 0) return
+    setUploading(true)
+    for (let i = 0; i < files.length; i++) {
+      const item = files[i]
+      if (item.status === 'done') continue
+      setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'uploading', progress: 0 } : f))
+      try {
+        await api.videos.upload(item.file, { warehouse, brand }, (pct) => {
+          setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, progress: pct } : f))
+        })
+        setFiles(prev => prev.map((f, idx) => idx === i ? { ...f, status: 'done', progress: 100 } : f))
+      } catch (err) {
+        setFiles(prev => prev.map((f, idx) => idx === i
+          ? { ...f, status: 'error', error: err instanceof Error ? err.message : 'Upload failed' }
+          : f))
+      }
+    }
+    await queryClient.invalidateQueries({ queryKey: ['videos'] })
+    setUploading(false)
+    // Close only if all done
+    if (files.every(f => f.status !== 'error')) onClose()
+  }
+
+  const allDone = files.length > 0 && files.every(f => f.status === 'done')
+  const hasError = files.some(f => f.status === 'error')
 
   return (
     <div className="space-y-4">
+      {/* Drop zone */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
         onDragLeave={() => setDragging(false)}
-        onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) setFile(f) }}
+        onDrop={(e) => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files) }}
         className={cn(
-          'border-2 border-dashed rounded-[12px] p-8 text-center transition-colors cursor-pointer',
+          'border-2 border-dashed rounded-[12px] p-6 text-center transition-colors cursor-pointer',
           dragging ? 'border-[#7c6af7] bg-[#7c6af710]' : 'border-[#2a2a38] hover:border-[#3a3a4e]'
         )}
         onClick={() => !uploading && document.getElementById('video-upload-input')?.click()}
@@ -333,55 +365,81 @@ function UploadFileTab({ warehouses, brands, onClose }: { warehouses: string[]; 
           id="video-upload-input"
           type="file"
           accept="video/*"
+          multiple
           className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) setFile(f) }}
+          onChange={(e) => addFiles(e.target.files)}
         />
-        <Upload className="w-8 h-8 text-[#55556a] mx-auto mb-3" />
-        {file ? (
-          <p className="text-sm text-[#a89bff] font-medium break-all leading-snug px-2" title={file.name}>{file.name}</p>
-        ) : (
-          <>
-            <p className="text-sm text-[#f0f0f5]">Drop video here or click to browse</p>
-            <p className="text-xs text-[#55556a] mt-1">MP4, MOV, AVI up to 4GB</p>
-          </>
-        )}
+        <Upload className="w-7 h-7 text-[#55556a] mx-auto mb-2" />
+        <p className="text-sm text-[#f0f0f5]">Drop videos here or click to browse</p>
+        <p className="text-xs text-[#55556a] mt-1">MP4, MOV, AVI · có thể chọn nhiều file</p>
       </div>
 
-      {uploading && (
-        <div className="space-y-1">
-          <div className="flex justify-between text-xs text-[#8888a8]">
-            <span>Uploading...</span>
-            <span>{progress}%</span>
-          </div>
-          <div className="w-full bg-[#2a2a38] rounded-full h-2 overflow-hidden">
-            <div
-              className="h-2 rounded-full bg-[#7c6af7] transition-all duration-200"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
+      {/* File list */}
+      {files.length > 0 && (
+        <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+          {files.map((item, i) => (
+            <div key={item.file.name} className="bg-[#111118] border border-[#1e1e2a] rounded-[8px] px-3 py-2">
+              <div className="flex items-center gap-2">
+                {item.status === 'done' && <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />}
+                {item.status === 'error' && <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />}
+                {(item.status === 'pending' || item.status === 'uploading') && (
+                  <div className="w-3.5 h-3.5 rounded-full border border-[#55556a] flex-shrink-0" />
+                )}
+                <span className="text-xs text-[#f0f0f5] truncate flex-1">{item.file.name}</span>
+                <span className="text-[10px] text-[#55556a] flex-shrink-0">
+                  {(item.file.size / 1024 / 1024).toFixed(1)} MB
+                </span>
+                {!uploading && item.status !== 'done' && (
+                  <button onClick={() => removeFile(i)} className="text-[#55556a] hover:text-[#f87171] transition-colors">
+                    <XIcon className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+              {item.status === 'uploading' && (
+                <div className="mt-1.5 flex items-center gap-2">
+                  <div className="flex-1 h-1 bg-[#2a2a38] rounded-full overflow-hidden">
+                    <div
+                      className="h-1 bg-[#7c6af7] rounded-full transition-all duration-200"
+                      style={{ width: `${item.progress}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-[#8888a8] w-8 text-right">{item.progress}%</span>
+                </div>
+              )}
+              {item.status === 'error' && (
+                <p className="text-[10px] text-red-400 mt-1 truncate">{item.error}</p>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
-      {error && <p className="text-red-400 text-xs">{error}</p>}
+      <div className="grid grid-cols-2 gap-3">
+        <Select label="Warehouse" value={warehouse} onChange={(e) => setWarehouse(e.target.value)}>
+          <option value="">Select warehouse...</option>
+          {warehouses.map((w) => <option key={w} value={w}>{w}</option>)}
+        </Select>
+        <Select label="Brand" value={brand} onChange={(e) => setBrand(e.target.value)}>
+          <option value="">Select brand...</option>
+          {brands.map((b) => <option key={b} value={b}>{b}</option>)}
+        </Select>
+      </div>
 
-      <Select label="Warehouse" value={warehouse} onChange={(e) => setWarehouse(e.target.value)}>
-        <option value="">Select warehouse...</option>
-        {warehouses.map((w) => <option key={w} value={w}>{w}</option>)}
-      </Select>
-      <Select label="Brand" value={brand} onChange={(e) => setBrand(e.target.value)}>
-        <option value="">Select brand...</option>
-        {brands.map((b) => <option key={b} value={b}>{b}</option>)}
-      </Select>
-      <div className="flex gap-2 justify-end pt-2">
-        <Button variant="ghost" onClick={onClose} disabled={uploading}>Cancel</Button>
+      {allDone && <p className="text-xs text-green-400 text-center">Tất cả {files.length} video đã upload thành công!</p>}
+      {hasError && <p className="text-xs text-[#f87171] text-center">Một số file upload thất bại. Đóng và thử lại.</p>}
+
+      <div className="flex gap-2 justify-end pt-1">
+        <Button variant="ghost" onClick={onClose} disabled={uploading}>
+          {allDone ? 'Close' : 'Cancel'}
+        </Button>
         <Button
           variant="primary"
-          disabled={!file || uploading}
+          disabled={files.length === 0 || uploading || allDone}
           loading={uploading}
           leftIcon={<Upload className="w-4 h-4" />}
           onClick={handleSubmit}
         >
-          Upload
+          Upload {files.length > 1 ? `${files.length} Videos` : 'Video'}
         </Button>
       </div>
     </div>
