@@ -1,4 +1,6 @@
-backend/
 docker/
 node_modules/
+backend/.vercel/
+backend/tests/
+backend/workers/
 *.md

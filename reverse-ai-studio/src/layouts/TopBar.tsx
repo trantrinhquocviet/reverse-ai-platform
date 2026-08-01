@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
-import { useLocation } from 'react-router-dom'
-import { Bell, Search, CheckCheck, Cpu, AlertCircle, Eye, Download } from 'lucide-react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { Bell, Search, CheckCheck, Cpu, AlertCircle, Eye, Download, Loader2 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { mockNotifications } from '@/services/mockData'
+import { useProcessing } from '@/contexts/ProcessingContext'
 import type { Notification, NotificationType } from '@/types'
 
 const breadcrumbMap: Record<string, string[]> = {
@@ -51,7 +52,9 @@ function timeAgo(iso: string): string {
 
 export function TopBar() {
   const location = useLocation()
+  const navigate = useNavigate()
   const crumbs = getBreadcrumb(location.pathname)
+  const { job } = useProcessing()
 
   const [notifications, setNotifications] = useState<Notification[]>(mockNotifications)
   const [open, setOpen] = useState(false)
@@ -96,6 +99,27 @@ export function TopBar() {
 
       {/* Right actions */}
       <div className="flex items-center gap-2">
+        {/* Processing indicator */}
+        {job && job.status === 'running' && (
+          <button
+            onClick={() => navigate(`/videos/${job.videoId}`)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-[8px] bg-[#7c6af720] border border-[#7c6af740] hover:bg-[#7c6af730] transition-colors"
+          >
+            <Loader2 className="w-3 h-3 text-[#a89bff] animate-spin flex-shrink-0" />
+            <div className="flex flex-col items-start gap-0.5">
+              <span className="text-[10px] font-medium text-[#a89bff] leading-none max-w-[120px] truncate">{job.videoName}</span>
+              <div className="flex items-center gap-1">
+                <div className="w-16 h-0.5 rounded-full bg-[#1e1e2a]">
+                  <div
+                    className="h-0.5 rounded-full bg-[#7c6af7] transition-all duration-300"
+                    style={{ width: `${job.total ? (job.current / job.total) * 100 : 0}%` }}
+                  />
+                </div>
+                <span className="text-[9px] text-[#55556a]">{job.current}/{job.total}</span>
+              </div>
+            </div>
+          </button>
+        )}
         <button className="p-2 rounded-[8px] text-[#55556a] hover:text-[#f0f0f5] hover:bg-[#ffffff08] transition-colors">
           <Search className="w-4 h-4" />
         </button>
