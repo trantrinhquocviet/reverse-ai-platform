@@ -1,20 +1,12 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "reverse-ai-studio/package.json",
-      "use": "@vercel/static-build",
-      "config": { "distDir": "dist" }
-    },
-    {
-      "src": "backend/api/index.py",
-      "use": "@vercel/python",
-      "config": { "maxLambdaSize": "50mb" }
-    }
-  ],
-  "routes": [
-    { "src": "/api/(.*)", "dest": "backend/api/index.py" },
-    { "handle": "filesystem" },
-    { "src": "/(.*)", "dest": "/index.html" }
+  "buildCommand": "cd reverse-ai-studio && npm install && npm run build",
+  "outputDirectory": "reverse-ai-studio/dist",
+  "rewrites": [
+    { "source": "/api/v1/:path*", "destination": "/api/index" },
+    { "source": "/health", "destination": "/api/index" },
+    { "source": "/docs", "destination": "/api/index" },
+    { "source": "/redoc", "destination": "/api/index" },
+    { "source": "/openapi.json", "destination": "/api/index" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
