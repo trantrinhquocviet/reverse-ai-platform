@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.dependencies import CurrentUser, get_current_user
 from app.modules.video.schemas import (
     VideoCreate,
     VideoFilter,
@@ -77,16 +78,14 @@ async def get_video(
     return VideoOut.model_validate(video)
 
 
-_ANON_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
-
-
 @router.post("", response_model=VideoOut, status_code=201, summary="Create video metadata")
 async def create_video(
     body: VideoCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> VideoOut:
     service = VideoService(db)
-    video = await service.create_video(body, uploaded_by=_ANON_USER_ID)
+    video = await service.create_video(body, uploaded_by=uuid.UUID(current_user.user_id))
     return VideoOut.model_validate(video)
 
 
@@ -120,10 +119,11 @@ async def delete_video(
 async def import_video_from_url(
     body: VideoImportUrl,
     db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> VideoUploadResponse:
     service = VideoService(db)
     video, job_id = await service.import_video_from_url(
-        body, uploaded_by=_ANON_USER_ID
+        body, uploaded_by=uuid.UUID(current_user.user_id)
     )
     logger.info("Video imported from URL", video_id=str(video.id), url=body.url, job_id=job_id)
     return VideoUploadResponse(
@@ -144,11 +144,12 @@ async def upload_video(
     warehouse: str = Query(default=""),
     brand: str = Query(default=""),
     db: AsyncSession = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> VideoUploadResponse:
     service = VideoService(db)
     video = await service.create_video(
         VideoCreate(name=file.filename or "untitled", warehouse=warehouse, brand=brand),
-        uploaded_by=_ANON_USER_ID,
+        uploaded_by=uuid.UUID(current_user.user_id),
     )
 
     storage_path = await upload_file(file, video.id)
