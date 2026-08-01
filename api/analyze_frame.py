@@ -100,9 +100,15 @@ async def call_vision_ai(image_base64: str) -> dict:
         resp.raise_for_status()
         data = resp.json()
         text = data["choices"][0]["message"]["content"].strip()
+        # Strip markdown fences
         if text.startswith("```"):
             lines = text.splitlines()
             text = "\n".join(lines[1:-1]) if len(lines) > 2 else text
+        # Extract first JSON object found in response
+        import re
+        match = re.search(r'\{[\s\S]*\}', text)
+        if match:
+            text = match.group(0)
         return json.loads(text)
 
 
@@ -160,11 +166,15 @@ async def analyze_frame(
     token = authorization.split(" ", 1)[1]
     await verify_jwt(token)
 
-    # Call vision AI (OpenRouter → Gemini Flash free)
+    # Call vision AI (OpenRouter)
     try:
         ai_result = await call_vision_ai(request.image_base64)
-    except (json.JSONDecodeError, KeyError) as e:
-        raise HTTPException(status_code=502, detail=f"Failed to parse AI response: {e}")
+    except (json.JSONDecodeError, KeyError):
+        # Model returned non-JSON — save with empty result rather than failing
+        ai_result = {
+            "tracking_codes": [], "barcodes": [], "packaging_status": "unknown",
+            "package_count": 0, "label_text": [], "confidence": 0.0, "notes": "parse_error"
+        }
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"OpenRouter API error: {e.response.text}")
 
