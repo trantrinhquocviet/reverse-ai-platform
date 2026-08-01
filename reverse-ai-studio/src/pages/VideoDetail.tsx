@@ -1,15 +1,24 @@
-import { useState } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Clock, Film, Monitor, Calendar, Tag, Warehouse, Play, ScanLine, Barcode, Package, ShoppingCart, Star, CheckSquare, Pencil, Check, X } from 'lucide-react'
+import { ArrowLeft, Clock, Film, Monitor, Calendar, Tag, Warehouse, Play, ScanLine, Barcode, Package, ShoppingCart, Star, CheckSquare, Pencil, Check, X, Loader2 } from 'lucide-react'
 import { useVideo, useUpdateVideo } from '@/hooks/useVideos'
 import { VideoStatusBadge } from '@/components/Badge'
 import { Button } from '@/components/Button'
 import { Card } from '@/components/Card'
-import { Input, Select } from '@/components/Input'
+import { Input } from '@/components/Input'
 import { formatDateTime } from '@/utils/formatters'
 import { supabase } from '@/services/api'
+import { BrowserMultiFormatReader } from '@zxing/library'
 import type { AIAnalysisResult } from '@/types'
 import type { LucideIcon } from 'lucide-react'
+
+interface AIFrameResult {
+  timestamp: number
+  status: 'ok' | 'error'
+  imageId?: string
+  aiResult?: AIAnalysisResult
+  error?: string
+}
 
 const aiSections: { type: AIAnalysisResult['type']; icon: LucideIcon; description: string }[] = [
   { type: 'Tracking Code', icon: ScanLine, description: 'Scan & extract tracking codes from packages' },
@@ -27,9 +36,18 @@ export function VideoDetail() {
   const { data: video, isLoading } = useVideo(id ?? '')
   const updateVideo = useUpdateVideo()
 
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const zxingRef = useRef<BrowserMultiFormatReader | null>(null)
+
+  const getZxing = useCallback(() => {
+    if (!zxingRef.current) zxingRef.current = new BrowserMultiFormatReader()
+    return zxingRef.current
+  }, [])
+
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({ name: '', warehouse: '', brand: '' })
   const [aiLoading, setAiLoading] = useState(false)
+  const [aiProgress, setAiProgress] = useState<{ current: number; total: number; results: AIFrameResult[] } | null>(null)
   const [aiStatus, setAiStatus] = useState<string | null>(null)
 
   const startEdit = () => {
@@ -46,25 +64,117 @@ export function VideoDetail() {
     setEditing(false)
   }
 
+  const decodeBarcodesFromCanvas = async (canvas: HTMLCanvasElement): Promise<string[]> => {
+    try {
+      const reader = getZxing()
+      // Convert canvas → HTMLImageElement for ZXing
+      const img = document.createElement('img')
+      await new Promise<void>((res) => { img.onload = () => res(); img.src = canvas.toDataURL() })
+      const result = await reader.decodeFromImageElement(img)
+      return result ? [result.getText()] : []
+    } catch {
+      // NotFoundException is normal when no barcode in frame
+      return []
+    }
+  }
+
+  const extractFrameBase64 = (videoEl: HTMLVideoElement, timestamp: number): Promise<{ base64: string; canvas: HTMLCanvasElement }> =>
+    new Promise((resolve, reject) => {
+      videoEl.currentTime = timestamp
+      const onSeeked = () => {
+        videoEl.removeEventListener('seeked', onSeeked)
+        try {
+          const canvas = document.createElement('canvas')
+          canvas.width = Math.min(videoEl.videoWidth, 1280)
+          canvas.height = Math.round(canvas.width * (videoEl.videoHeight / videoEl.videoWidth))
+          const ctx = canvas.getContext('2d')!
+          ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height)
+          const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1]
+          resolve({ base64, canvas })
+        } catch (e) {
+          reject(e)
+        }
+      }
+      videoEl.addEventListener('seeked', onSeeked)
+    })
+
   const startAiProcessing = async () => {
     if (!video || !id) return
+    const videoEl = videoRef.current
+    if (!videoEl || !videoEl.src) {
+      setAiStatus('Video chưa load — vui lòng chờ video hiện lên rồi thử lại')
+      return
+    }
+
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      setAiStatus('Phiên đăng nhập hết hạn, vui lòng đăng nhập lại')
+      return
+    }
+
     setAiLoading(true)
     setAiStatus(null)
+    setAiProgress(null)
+
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`/api/v1/videos/${id}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
-        body: JSON.stringify({ status: 'processing' }),
-      })
-      if (!res.ok) throw new Error(`${res.status}`)
+      // Mark video as processing
       await supabase.from('videos').update({ status: 'processing' }).eq('id', id)
-      setAiStatus('Đã gửi yêu cầu xử lý AI')
+
+      // Wait for metadata if not ready
+      if (!isFinite(videoEl.duration) || videoEl.duration === 0) {
+        await new Promise<void>((res, rej) => {
+          const onMeta = () => { videoEl.removeEventListener('loadedmetadata', onMeta); res() }
+          const onErr = () => { videoEl.removeEventListener('error', onErr); rej(new Error('Video load error')) }
+          videoEl.addEventListener('loadedmetadata', onMeta)
+          videoEl.addEventListener('error', onErr)
+          setTimeout(() => rej(new Error('Timeout loading video metadata')), 15000)
+        })
+      }
+
+      const INTERVAL = 10 // seconds between frames
+      const duration = videoEl.duration
+      const timestamps: number[] = []
+      for (let t = 0; t < duration; t += INTERVAL) timestamps.push(parseFloat(t.toFixed(1)))
+      if (timestamps.length === 0) timestamps.push(0)
+
+      const results: AIFrameResult[] = []
+      setAiProgress({ current: 0, total: timestamps.length, results })
+
+      for (let i = 0; i < timestamps.length; i++) {
+        const ts = timestamps[i]
+        const filename = `frame_${String(Math.round(ts)).padStart(6, '0')}.jpg`
+        try {
+          const { base64, canvas } = await extractFrameBase64(videoEl, ts)
+          // ZXing: decode barcode/QR client-side (free, instant)
+          const clientBarcodes = await decodeBarcodesFromCanvas(canvas)
+          const res = await fetch('/api/analyze_frame', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({ image_base64: base64, video_id: id, frame_timestamp: ts, filename, client_barcodes: clientBarcodes }),
+          })
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({})) as { detail?: string }
+            results.push({ timestamp: ts, status: 'error', error: err.detail ?? `HTTP ${res.status}` })
+          } else {
+            const data = await res.json() as { id: string; ai_result: AIAnalysisResult }
+            results.push({ timestamp: ts, status: 'ok', imageId: data.id, aiResult: data.ai_result })
+          }
+        } catch (e) {
+          results.push({ timestamp: ts, status: 'error', error: e instanceof Error ? e.message : 'unknown' })
+        }
+        setAiProgress({ current: i + 1, total: timestamps.length, results: [...results] })
+      }
+
+      // Mark video as ready
+      await supabase.from('videos').update({ status: 'ready' }).eq('id', id)
+      const ok = results.filter(r => r.status === 'ok').length
+      setAiStatus(`Hoàn tất! ${ok}/${timestamps.length} frames phân tích thành công`)
     } catch (e) {
       setAiStatus(`Lỗi: ${e instanceof Error ? e.message : 'unknown'}`)
+      await supabase.from('videos').update({ status: 'failed' }).eq('id', id)
     } finally {
       setAiLoading(false)
     }
@@ -111,10 +221,12 @@ export function VideoDetail() {
             <div className="relative bg-black aspect-video">
               {video.filePath ? (
                 <video
+                  ref={videoRef}
                   src={video.filePath}
                   controls
                   className="w-full h-full"
                   preload="metadata"
+                  crossOrigin="anonymous"
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
@@ -129,23 +241,65 @@ export function VideoDetail() {
 
           <div>
             <h3 className="text-sm font-semibold text-[#f0f0f5] mb-3">AI Analysis</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-              {aiSections.map(({ type, icon: Icon, description }) => (
-                <div key={type} className="rounded-[12px] bg-[#111118] border border-[#1e1e2a] p-4 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <div className="p-1.5 rounded-[8px] bg-[#ffffff08]">
-                      <Icon className="w-3.5 h-3.5 text-[#55556a]" />
+            {aiProgress && aiProgress.results.length > 0 ? (
+              <div className="space-y-2">
+                {aiProgress.results.map((r) => (
+                  <div key={r.timestamp} className="rounded-[10px] bg-[#111118] border border-[#1e1e2a] p-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10px] font-medium text-[#8888a8]">
+                        t={r.timestamp}s
+                      </span>
+                      {r.status === 'ok'
+                        ? <span className="text-[10px] text-green-400">✓ OK</span>
+                        : <span className="text-[10px] text-red-400">✗ Lỗi</span>}
                     </div>
-                    <span className="text-xs font-medium text-[#f0f0f5]">{type}</span>
+                    {r.status === 'ok' && r.aiResult && (
+                      <div className="space-y-1">
+                        {(r.aiResult as unknown as { tracking_codes?: string[]; barcodes?: string[]; packaging_status?: string; package_count?: number; label_text?: string[] }).tracking_codes?.length ? (
+                          <p className="text-[10px] text-[#f0f0f5]">
+                            <span className="text-[#55556a]">Tracking:</span> {(r.aiResult as unknown as { tracking_codes: string[] }).tracking_codes.join(', ')}
+                          </p>
+                        ) : null}
+                        {(r.aiResult as unknown as { packaging_status?: string }).packaging_status && (
+                          <p className="text-[10px] text-[#f0f0f5]">
+                            <span className="text-[#55556a]">Packaging:</span>{' '}
+                            <span className={(r.aiResult as unknown as { packaging_status: string }).packaging_status === 'ok' ? 'text-green-400' : 'text-yellow-400'}>
+                              {(r.aiResult as unknown as { packaging_status: string }).packaging_status}
+                            </span>
+                          </p>
+                        )}
+                        {(r.aiResult as unknown as { package_count?: number }).package_count !== undefined && (
+                          <p className="text-[10px] text-[#f0f0f5]">
+                            <span className="text-[#55556a]">Packages:</span> {(r.aiResult as unknown as { package_count: number }).package_count}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {r.status === 'error' && (
+                      <p className="text-[10px] text-red-400 truncate">{r.error}</p>
+                    )}
                   </div>
-                  <p className="text-[10px] text-[#55556a] leading-snug">{description}</p>
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-1.5 h-1.5 rounded-full bg-[#55556a]" />
-                    <span className="text-[10px] text-[#55556a] italic">Waiting for AI Analysis</span>
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                {aiSections.map(({ type, icon: Icon, description }) => (
+                  <div key={type} className="rounded-[12px] bg-[#111118] border border-[#1e1e2a] p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <div className="p-1.5 rounded-[8px] bg-[#ffffff08]">
+                        <Icon className="w-3.5 h-3.5 text-[#55556a]" />
+                      </div>
+                      <span className="text-xs font-medium text-[#f0f0f5]">{type}</span>
+                    </div>
+                    <p className="text-[10px] text-[#55556a] leading-snug">{description}</p>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-1.5 h-1.5 rounded-full bg-[#55556a]" />
+                      <span className="text-[10px] text-[#55556a] italic">Waiting for AI Analysis</span>
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -254,10 +408,35 @@ export function VideoDetail() {
                 variant="outline"
                 className="w-full"
                 onClick={startAiProcessing}
-                disabled={aiLoading || video.status === 'Processing'}
+                disabled={aiLoading}
               >
-                {aiLoading ? 'Đang gửi...' : 'Start AI Processing'}
+                {aiLoading ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Đang xử lý...
+                  </span>
+                ) : 'Start AI Processing'}
               </Button>
+
+              {aiProgress && (
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-[10px] text-[#8888a8]">
+                    <span>Phân tích frames</span>
+                    <span>{aiProgress.current}/{aiProgress.total}</span>
+                  </div>
+                  <div className="w-full h-1 rounded-full bg-[#1e1e2a]">
+                    <div
+                      className="h-1 rounded-full bg-[#7c6af7] transition-all duration-300"
+                      style={{ width: `${(aiProgress.current / aiProgress.total) * 100}%` }}
+                    />
+                  </div>
+                  <div className="flex gap-2 text-[10px]">
+                    <span className="text-green-400">✓ {aiProgress.results.filter(r => r.status === 'ok').length} ok</span>
+                    <span className="text-red-400">✗ {aiProgress.results.filter(r => r.status === 'error').length} lỗi</span>
+                  </div>
+                </div>
+              )}
+
               {aiStatus && (
                 <p className="text-[10px] text-[#8888a8] text-center">{aiStatus}</p>
               )}

@@ -4,6 +4,7 @@ export interface Video {
   id: string
   name: string
   thumbnail: string
+  filePath: string
   warehouse: string
   brand: string
   uploadTime: string
