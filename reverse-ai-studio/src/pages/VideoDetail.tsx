@@ -132,9 +132,11 @@ export function VideoDetail() {
       }
 
       const INTERVAL = 10 // seconds between frames
+      const OFFSET = 8   // start at 8s to skip intro/dark frames
       const duration = videoEl.duration
       const timestamps: number[] = []
-      for (let t = 0; t < duration; t += INTERVAL) timestamps.push(parseFloat(t.toFixed(1)))
+      for (let t = OFFSET; t < duration; t += INTERVAL) timestamps.push(parseFloat(t.toFixed(1)))
+      if (timestamps.length === 0) timestamps.push(Math.min(OFFSET, duration - 1))
       if (timestamps.length === 0) timestamps.push(0)
 
       const results: AIFrameResult[] = []

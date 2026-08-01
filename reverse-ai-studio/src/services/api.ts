@@ -96,9 +96,14 @@ export const api = {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.')
 
-      // Extract video duration and file size before upload
-      const duration = await getVideoDuration(file)
-      const storagePath = `${crypto.randomUUID()}/${file.name}`
+      // Extract duration + thumbnail frame in parallel
+      const [duration, thumbnailBlob] = await Promise.all([
+        getVideoDuration(file),
+        extractVideoThumbnail(file),
+      ])
+
+      const videoId = crypto.randomUUID()
+      const storagePath = `${videoId}/${file.name}`
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const uploadOptions: any = { upsert: false }
@@ -111,6 +116,14 @@ export const api = {
 
       const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${storagePath}`
 
+      // Upload thumbnail if extracted successfully
+      let thumbnailUrl: string | null = null
+      if (thumbnailBlob) {
+        const thumbPath = `${videoId}/thumbnail.jpg`
+        const { error: thumbErr } = await supabase.storage.from('videos').upload(thumbPath, thumbnailBlob, { contentType: 'image/jpeg', upsert: false })
+        if (!thumbErr) thumbnailUrl = `${SUPABASE_URL}/storage/v1/object/public/videos/${thumbPath}`
+      }
+
       const { data, error } = await supabase.from('videos').insert({
         name: file.name,
         warehouse: meta.warehouse,
@@ -118,6 +131,7 @@ export const api = {
         file_path: publicUrl,
         file_size: file.size,
         duration: duration ?? null,
+        thumbnail_path: thumbnailUrl,
         status: 'pending',
       }).select().single()
       if (error) throw new Error(error.message)
@@ -344,6 +358,33 @@ function getVideoDuration(file: File): Promise<number | null> {
     video.onloadedmetadata = () => {
       URL.revokeObjectURL(url)
       resolve(isFinite(video.duration) ? video.duration : null)
+    }
+    video.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
+    video.src = url
+  })
+}
+
+function extractVideoThumbnail(file: File): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video')
+    video.preload = 'metadata'
+    video.muted = true
+    const url = URL.createObjectURL(file)
+    video.onloadedmetadata = () => {
+      // Seek to 1s (or 10% of duration) to avoid black opening frame
+      video.currentTime = Math.min(1, video.duration * 0.1)
+    }
+    video.onseeked = () => {
+      URL.revokeObjectURL(url)
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = 640
+        canvas.height = Math.round(640 * (video.videoHeight / video.videoWidth))
+        canvas.getContext('2d')!.drawImage(video, 0, 0, canvas.width, canvas.height)
+        canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.85)
+      } catch {
+        resolve(null)
+      }
     }
     video.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
     video.src = url
