@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useAutoTrain } from '@/hooks/useAutoTrain'
 import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save, Video, ChevronDown } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { supabase } from '@/services/api'
@@ -173,6 +174,7 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
   onReviewed: () => void
 }) {
   const queryClient = useQueryClient()
+  const { incrementCount } = useAutoTrain()
   const [localStatus, setLocalStatus] = useState(frame.review_status)
   const [lightbox, setLightbox] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -186,6 +188,7 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
     onSuccess: (_, status) => {
       setLocalStatus(status)
       queryClient.invalidateQueries({ queryKey: ['annotation-frames'] })
+      if (status === 'approved') incrementCount()
       onReviewed()
     },
   })

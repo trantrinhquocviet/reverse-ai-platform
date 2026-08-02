@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Search, CheckCheck, Cpu, AlertCircle, Eye, Download, Loader2, X, ChevronRight, ListVideo, Bot } from 'lucide-react'
+import { Bell, Search, CheckCheck, Cpu, AlertCircle, Eye, Download, Loader2, X, ChevronRight, ListVideo, Bot, Zap } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { mockNotifications } from '@/services/mockData'
 import { useProcessing, VISION_MODELS } from '@/contexts/ProcessingContext'
+import { useAutoTrain } from '@/hooks/useAutoTrain'
 import type { Notification, NotificationType } from '@/types'
 
 const breadcrumbMap: Record<string, string[]> = {
@@ -80,7 +81,10 @@ export function TopBar() {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
-  const unreadCount = notifications.filter(n => !n.read).length
+  const { count: atCount, notified: atNotified, isReady: atIsReady } = useAutoTrain()
+  const showAutoTrainAlert = atIsReady && atNotified && location.pathname !== '/mini-ai-trainer'
+
+  const unreadCount = notifications.filter(n => !n.read).length + (showAutoTrainAlert ? 1 : 0)
 
   const markAllRead = () => {
     setNotifications(prev => prev.map(n => ({ ...n, read: true })))
@@ -335,6 +339,21 @@ export function TopBar() {
 
               {/* List */}
               <div className="max-h-80 overflow-y-auto divide-y divide-[#1e1e2a]">
+                {/* Auto-train alert */}
+                {showAutoTrainAlert && (
+                  <div
+                    className="flex items-start gap-3 px-4 py-3 cursor-pointer hover:bg-[#7c6af710] bg-[#7c6af708] transition-colors"
+                    onClick={() => { navigate('/mini-ai-trainer'); setOpen(false) }}
+                  >
+                    <div className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 bg-[#7c6af720]">
+                      <Zap className="w-3.5 h-3.5 text-[#a89bff]" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-[#a89bff]">Đủ {atCount} frames — sẵn sàng train</p>
+                      <p className="text-[10px] text-[#55556a] mt-0.5">Đi đến Mini AI Trainer →</p>
+                    </div>
+                  </div>
+                )}
                 {notifications.map(notif => (
                   <div
                     key={notif.id}

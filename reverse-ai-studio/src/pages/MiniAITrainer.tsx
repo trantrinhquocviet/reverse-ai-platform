@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Brain, Database, Play, Download, CheckCircle, Loader2, AlertCircle, BarChart3, Layers, HardDrive, Trash2, RefreshCw, Star, History, X, ZoomIn } from 'lucide-react'
+import { Brain, Database, Play, Download, CheckCircle, Loader2, AlertCircle, BarChart3, Layers, HardDrive, Trash2, RefreshCw, Star, History, X, ZoomIn, Zap } from 'lucide-react'
 import { supabase } from '@/services/api'
 import { cn } from '@/utils/cn'
+import { useAutoTrain } from '@/hooks/useAutoTrain'
 
 async function loadTF() {
   const tf = await import('@tensorflow/tfjs')
@@ -193,6 +194,22 @@ export function MiniAITrainer() {
   }, {} as Record<PackagingLabel, number>)
 
   const canTrain = samples.length >= 6
+
+  const { enabled: atEnabled, setEnabled: atSetEnabled, threshold: atThreshold, setThreshold: atSetThreshold,
+          count: atCount, isReady: atIsReady, resetCount: atResetCount } = useAutoTrain()
+
+  // Full-auto: trigger training when event fired (user is on this page)
+  useEffect(() => {
+    const handler = () => {
+      if (phase === 'idle' || phase === 'done') {
+        startTraining()
+        atResetCount()
+      }
+    }
+    window.addEventListener('auto-train-trigger', handler)
+    return () => window.removeEventListener('auto-train-trigger', handler)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase])
 
   // Auto-load active version on mount
   useEffect(() => {
@@ -484,6 +501,33 @@ export function MiniAITrainer() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* ── Left panel ─────────────────────────────────────────────────── */}
         <div className="space-y-4">
+
+          {/* Semi-auto banner — appears when threshold reached */}
+          {atIsReady && phase !== 'extracting' && phase !== 'training' && (
+            <div className="rounded-[14px] bg-[#7c6af715] border border-[#7c6af740] p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-[#a89bff]" />
+                <p className="text-sm font-semibold text-[#a89bff]">{atCount} frames approved</p>
+              </div>
+              <p className="text-[11px] text-[#8888a8]">Đủ data để train version mới. Retrain ngay?</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { startTraining(); atResetCount() }}
+                  disabled={!canTrain}
+                  className="flex-1 py-1.5 bg-[#7c6af7] hover:bg-[#6b5ce7] text-white text-xs rounded-[8px] font-medium transition-colors"
+                >
+                  Train v{versions.length + 1}
+                </button>
+                <button
+                  onClick={atResetCount}
+                  className="px-3 py-1.5 bg-[#1e1e2a] hover:bg-[#2a2a3a] text-[#55556a] text-xs rounded-[8px] transition-colors"
+                >
+                  Bỏ qua
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Dataset */}
           <div className="rounded-[14px] bg-[#111118] border border-[#1e1e2a] p-4 space-y-3">
             <div className="flex items-center gap-2">
@@ -697,6 +741,52 @@ export function MiniAITrainer() {
               </button>
             </div>
           )}
+
+          {/* Auto-train settings */}
+          <div className="rounded-[14px] bg-[#111118] border border-[#1e1e2a] p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-[#55556a]" />
+              <h3 className="text-sm font-semibold text-[#f0f0f5]">Auto-Train</h3>
+              <button
+                onClick={() => atSetEnabled(!atEnabled)}
+                className={cn(
+                  'ml-auto w-9 h-5 rounded-full transition-colors relative',
+                  atEnabled ? 'bg-[#7c6af7]' : 'bg-[#2a2a3a]'
+                )}
+              >
+                <span className={cn(
+                  'absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform',
+                  atEnabled ? 'translate-x-4' : 'translate-x-0.5'
+                )} />
+              </button>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-[#55556a]">Trigger sau mỗi</span>
+              <select
+                value={atThreshold}
+                onChange={e => atSetThreshold(Number(e.target.value))}
+                className="bg-[#1e1e2a] text-[#f0f0f5] text-xs rounded-[6px] px-2 py-1 border border-[#2a2a3a]"
+              >
+                {[10, 20, 30, 50].map(n => <option key={n} value={n}>{n} approvals</option>)}
+              </select>
+            </div>
+            {/* Progress bar */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-[10px] text-[#44445a]">
+                <span>{atCount} / {atThreshold} approved</span>
+                <span>{Math.min(100, Math.round(atCount / atThreshold * 100))}%</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-[#1e1e2a] overflow-hidden">
+                <div
+                  className={cn('h-full rounded-full transition-all', atIsReady ? 'bg-[#7c6af7]' : 'bg-[#44445a]')}
+                  style={{ width: `${Math.min(100, atCount / atThreshold * 100)}%` }}
+                />
+              </div>
+            </div>
+            <p className="text-[9px] text-[#44445a]">
+              {atEnabled ? 'Full-auto: train ngay khi đủ threshold (cần ở trang này)' : 'Semi-auto: hỏi trước khi train'}
+            </p>
+          </div>
         </div>
 
         {/* ── Right panel with tabs ──────────────────────────────────────── */}
