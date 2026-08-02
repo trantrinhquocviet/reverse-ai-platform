@@ -46,8 +46,15 @@ export function useProcessing() {
 }
 
 export function ProcessingProvider({ children }: { children: ReactNode }) {
+  const QUEUE_KEY = 'processing_queue_v1'
+
   const [job, setJob] = useState<ProcessingJob | null>(null)
-  const [queue, setQueue] = useState<QueuedVideo[]>([])
+  const [queue, setQueue] = useState<QueuedVideo[]>(() => {
+    try {
+      const saved = localStorage.getItem(QUEUE_KEY)
+      return saved ? (JSON.parse(saved) as QueuedVideo[]) : []
+    } catch { return [] }
+  })
   const processingRef = useRef(false)
   const hiddenVideoRef = useRef<HTMLVideoElement | null>(null)
   const zxingRef = useRef<BrowserMultiFormatReader | null>(null)
@@ -162,18 +169,28 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
   const clearJob = useCallback(() => setJob(null), [])
 
-  const addToQueue = useCallback((videos: QueuedVideo[]) => {
+  const setQueuePersisted = useCallback((updater: (prev: QueuedVideo[]) => QueuedVideo[]) => {
     setQueue(prev => {
-      const existingIds = new Set(prev.map(v => v.id))
-      return [...prev, ...videos.filter(v => !existingIds.has(v.id))]
+      const next = updater(prev)
+      try { localStorage.setItem(QUEUE_KEY, JSON.stringify(next)) } catch {}
+      return next
     })
   }, [])
 
-  const removeFromQueue = useCallback((videoId: string) => {
-    setQueue(prev => prev.filter(v => v.id !== videoId))
-  }, [])
+  const addToQueue = useCallback((videos: QueuedVideo[]) => {
+    setQueuePersisted(prev => {
+      const existingIds = new Set(prev.map(v => v.id))
+      return [...prev, ...videos.filter(v => !existingIds.has(v.id))]
+    })
+  }, [setQueuePersisted])
 
-  const clearQueue = useCallback(() => setQueue([]), [])
+  const removeFromQueue = useCallback((videoId: string) => {
+    setQueuePersisted(prev => prev.filter(v => v.id !== videoId))
+  }, [setQueuePersisted])
+
+  const clearQueue = useCallback(() => {
+    setQueuePersisted(() => [])
+  }, [setQueuePersisted])
 
   // Auto-process queue: when job is idle and queue has items, pick next and run
   useEffect(() => {
@@ -185,7 +202,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     if (!next.filePath) return
 
     processingRef.current = true
-    setQueue(prev => prev.slice(1))
+    setQueuePersisted(prev => prev.slice(1))
 
     const videoEl = hiddenVideoRef.current!
     videoEl.src = next.filePath

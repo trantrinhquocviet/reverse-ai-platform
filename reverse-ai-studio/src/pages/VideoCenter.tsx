@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { Upload, Search, Trash2, Video, LayoutGrid, List, Filter, Link2, CheckCircle2, AlertCircle, X as XIcon, Cpu, CheckSquare, Square } from 'lucide-react'
+import { Upload, Search, Trash2, Video, LayoutGrid, List, Filter, Link2, CheckCircle2, AlertCircle, X as XIcon, Cpu, CheckSquare, Square, Loader2 } from 'lucide-react'
 import { useVideos, useDeleteVideo, useFilterOptions, useUploadVideo, useImportVideoFromUrl } from '@/hooks/useVideos'
 import { Button } from '@/components/Button'
 import { Input, Select } from '@/components/Input'
@@ -589,104 +589,168 @@ function UploadFileTab({ warehouses, brands, onClose }: { warehouses: string[]; 
   )
 }
 
+interface UrlItem {
+  url: string
+  name: string
+  progress: number
+  stage: 'downloading' | 'uploading'
+  status: 'pending' | 'importing' | 'done' | 'error'
+  error?: string
+  videoId?: string
+  videoName?: string
+  filePath?: string
+}
+
 function ImportUrlTab({ warehouses, brands, onClose }: { warehouses: string[]; brands: string[]; onClose: () => void }) {
-  const [url, setUrl] = useState('')
-  const [name, setName] = useState('')
+  const [urlItems, setUrlItems] = useState<UrlItem[]>([{ url: '', name: '', progress: 0, stage: 'downloading', status: 'pending' }])
   const [warehouse, setWarehouse] = useState('')
   const [brand, setBrand] = useState('')
-  const [error, setError] = useState('')
   const [importing, setImporting] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [stage, setStage] = useState<'downloading' | 'uploading'>('downloading')
+  const [addToProcessing, setAddToProcessing] = useState(true)
   const queryClient = useQueryClient()
+  const { addToQueue } = useProcessing()
 
   const isValidUrl = (v: string) => { try { new URL(v); return true } catch { return false } }
 
+  const addRow = () => setUrlItems(prev => [...prev, { url: '', name: '', progress: 0, stage: 'downloading', status: 'pending' }])
+  const removeRow = (i: number) => setUrlItems(prev => prev.filter((_, idx) => idx !== i))
+  const updateRow = (i: number, patch: Partial<UrlItem>) =>
+    setUrlItems(prev => prev.map((item, idx) => idx === i ? { ...item, ...patch } : item))
+
+  const validItems = urlItems.filter(item => isValidUrl(item.url))
+  const allDone = urlItems.length > 0 && urlItems.every(i => i.status === 'done' || !isValidUrl(i.url))
+  const hasError = urlItems.some(i => i.status === 'error')
+
   const handleSubmit = async () => {
-    if (!isValidUrl(url)) { setError('URL không hợp lệ'); return }
-    setError('')
+    if (validItems.length === 0) return
     setImporting(true)
-    setProgress(0)
-    try {
-      await api.videos.importFromUrl(
-        { url, name: name || undefined, warehouse, brand },
-        (pct, s) => { setProgress(pct); setStage(s) },
-      )
-      await queryClient.invalidateQueries({ queryKey: ['videos'] })
-      onClose()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Import thất bại')
-    } finally {
-      setImporting(false)
+    const imported: { id: string; name: string; filePath: string }[] = []
+
+    for (let i = 0; i < urlItems.length; i++) {
+      const item = urlItems[i]
+      if (!isValidUrl(item.url) || item.status === 'done') continue
+      updateRow(i, { status: 'importing', progress: 0 })
+      try {
+        const result = await api.videos.importFromUrl(
+          { url: item.url, name: item.name || undefined, warehouse, brand },
+          (pct, s) => updateRow(i, { progress: pct, stage: s }),
+        ) as { id: string; name: string; filePath?: string } | undefined
+        const videoId = (result as any)?.id ?? ''
+        const fallbackName = item.name || (item.url.split('/').pop() ?? 'video')
+        const videoName: string = (result as any)?.name ?? fallbackName
+        const filePath = (result as any)?.filePath ?? item.url
+        updateRow(i, { status: 'done', progress: 100, videoId, videoName, filePath })
+        if (videoId) imported.push({ id: videoId, name: videoName, filePath })
+      } catch (err) {
+        updateRow(i, { status: 'error', error: err instanceof Error ? err.message : 'Import thất bại' })
+      }
     }
+
+    await queryClient.invalidateQueries({ queryKey: ['videos'] })
+    if (addToProcessing && imported.length > 0) addToQueue(imported)
+    setImporting(false)
   }
 
-  const stageLabel = stage === 'downloading' ? 'Đang tải video từ URL...' : 'Đang upload lên storage...'
+  const stageLabel = (s: 'downloading' | 'uploading') =>
+    s === 'downloading' ? 'Downloading...' : 'Uploading...'
 
   return (
     <div className="space-y-4">
-      <div className="space-y-1">
-        <label className="text-xs font-medium text-[#8888a8]">Video URL</label>
-        <div className="relative">
-          <Link2 className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#55556a]" />
-          <input
-            type="url"
-            placeholder="https://example.com/video.mp4"
-            value={url}
-            onChange={(e) => { setUrl(e.target.value); setError('') }}
-            disabled={importing}
-            className="w-full bg-[#111118] border border-[#1e1e2a] rounded-[8px] pl-9 pr-3 py-2 text-sm text-[#f0f0f5] placeholder-[#55556a] outline-none focus:border-[#7c6af7] transition-colors disabled:opacity-50"
-          />
-        </div>
-        {error && <p className="text-xs text-[#f87171]">{error}</p>}
-        <p className="text-[11px] text-[#55556a]">Direct link to MP4, MOV, AVI. URL phải cho phép truy cập công khai (CORS).</p>
-      </div>
-
-      <div className="space-y-1">
-        <label className="text-xs font-medium text-[#8888a8]">Tên video <span className="text-[#55556a]">(tuỳ chọn)</span></label>
-        <input
-          type="text"
-          placeholder="Để trống để dùng tên file từ URL"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          disabled={importing}
-          className="w-full bg-[#111118] border border-[#1e1e2a] rounded-[8px] px-3 py-2 text-sm text-[#f0f0f5] placeholder-[#55556a] outline-none focus:border-[#7c6af7] transition-colors disabled:opacity-50"
-        />
-      </div>
-
-      {importing && (
-        <div className="space-y-1">
-          <div className="flex justify-between text-xs text-[#8888a8]">
-            <span>{stageLabel}</span>
-            <span>{progress}%</span>
-          </div>
-          <div className="w-full bg-[#2a2a38] rounded-full h-2 overflow-hidden">
-            <div
-              className="h-2 rounded-full bg-[#7c6af7] transition-all duration-200"
-              style={{ width: `${progress}%` }}
+      {/* URL rows */}
+      <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+        {urlItems.map((item, i) => (
+          <div key={i} className="bg-[#111118] border border-[#1e1e2a] rounded-[10px] p-3 space-y-2">
+            <div className="flex items-center gap-2">
+              {item.status === 'done' && <CheckCircle2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />}
+              {item.status === 'error' && <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />}
+              {item.status === 'importing' && <Loader2 className="w-3.5 h-3.5 text-[#a89bff] animate-spin flex-shrink-0" />}
+              {item.status === 'pending' && <Link2 className="w-3.5 h-3.5 text-[#55556a] flex-shrink-0" />}
+              <input
+                type="url"
+                placeholder="https://example.com/video.mp4"
+                value={item.url}
+                onChange={e => updateRow(i, { url: e.target.value })}
+                disabled={importing || item.status === 'done'}
+                className="flex-1 min-w-0 bg-transparent text-xs text-[#f0f0f5] placeholder-[#55556a] outline-none disabled:opacity-60"
+              />
+              {!importing && item.status !== 'done' && urlItems.length > 1 && (
+                <button onClick={() => removeRow(i)} className="text-[#55556a] hover:text-[#f87171] transition-colors flex-shrink-0">
+                  <XIcon className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <input
+              type="text"
+              placeholder="Tên video (tuỳ chọn)"
+              value={item.name}
+              onChange={e => updateRow(i, { name: e.target.value })}
+              disabled={importing || item.status === 'done'}
+              className="w-full bg-transparent text-[11px] text-[#8888a8] placeholder-[#44445a] outline-none border-t border-[#1e1e2a] pt-2 disabled:opacity-60"
             />
+            {item.status === 'importing' && (
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-1 bg-[#2a2a38] rounded-full overflow-hidden">
+                  <div className="h-1 bg-[#7c6af7] rounded-full transition-all duration-200" style={{ width: `${item.progress}%` }} />
+                </div>
+                <span className="text-[10px] text-[#55556a] w-20 flex-shrink-0">{stageLabel(item.stage)} {item.progress}%</span>
+              </div>
+            )}
+            {item.status === 'error' && <p className="text-[10px] text-red-400">{item.error}</p>}
           </div>
-        </div>
+        ))}
+      </div>
+
+      {/* Add row button */}
+      {!importing && (
+        <button
+          onClick={addRow}
+          className="w-full flex items-center justify-center gap-1.5 py-2 border border-dashed border-[#2a2a38] rounded-[8px] text-xs text-[#55556a] hover:text-[#8888a8] hover:border-[#3a3a4e] transition-colors"
+        >
+          + Thêm URL
+        </button>
       )}
 
-      <Select label="Warehouse" value={warehouse} onChange={(e) => setWarehouse(e.target.value)}>
-        <option value="">Select warehouse...</option>
-        {warehouses.map((w) => <option key={w} value={w}>{w}</option>)}
-      </Select>
-      <Select label="Brand" value={brand} onChange={(e) => setBrand(e.target.value)}>
-        <option value="">Select brand...</option>
-        {brands.map((b) => <option key={b} value={b}>{b}</option>)}
-      </Select>
-      <div className="flex gap-2 justify-end pt-2">
-        <Button variant="ghost" onClick={onClose} disabled={importing}>Cancel</Button>
+      <div className="grid grid-cols-2 gap-3">
+        <Select label="Warehouse" value={warehouse} onChange={(e) => setWarehouse(e.target.value)}>
+          <option value="">Select warehouse...</option>
+          {warehouses.map((w) => <option key={w} value={w}>{w}</option>)}
+        </Select>
+        <Select label="Brand" value={brand} onChange={(e) => setBrand(e.target.value)}>
+          <option value="">Select brand...</option>
+          {brands.map((b) => <option key={b} value={b}>{b}</option>)}
+        </Select>
+      </div>
+
+      {/* Auto-process toggle */}
+      <label className="flex items-center gap-2 cursor-pointer select-none">
+        <div
+          onClick={() => setAddToProcessing(v => !v)}
+          className={cn(
+            'w-8 h-4 rounded-full transition-colors relative flex-shrink-0',
+            addToProcessing ? 'bg-[#7c6af7]' : 'bg-[#2a2a38]'
+          )}
+        >
+          <div className={cn('absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all', addToProcessing ? 'left-[18px]' : 'left-0.5')} />
+        </div>
+        <span className="text-xs text-[#8888a8]">Tự động thêm vào hàng chờ AI Processing sau khi import</span>
+      </label>
+
+      {allDone && (
+        <p className="text-xs text-green-400 text-center">
+          Import xong! {addToProcessing ? 'Đã thêm vào hàng chờ xử lý.' : ''}
+        </p>
+      )}
+
+      <div className="flex gap-2 justify-end pt-1">
+        <Button variant="ghost" onClick={onClose} disabled={importing}>{allDone ? 'Close' : 'Cancel'}</Button>
         <Button
           variant="primary"
-          disabled={!url || importing}
+          disabled={validItems.length === 0 || importing || allDone}
           loading={importing}
           leftIcon={<Link2 className="w-4 h-4" />}
           onClick={handleSubmit}
         >
-          Import
+          Import {validItems.length > 1 ? `${validItems.length} Videos` : 'Video'}
         </Button>
       </div>
     </div>
