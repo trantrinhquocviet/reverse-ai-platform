@@ -3,6 +3,13 @@ import Tesseract from 'tesseract.js'
 import { BrowserMultiFormatReader } from '@zxing/library'
 import { supabase } from '@/services/api'
 
+export interface FrameCheckpoints {
+  productCorrect:  boolean | null
+  filmWrapped:     boolean | null
+  awbAttached:     boolean | null
+  barcodeReadable: boolean | null
+}
+
 export interface FrameResult {
   timestamp: number
   status: 'ok' | 'error'
@@ -10,6 +17,7 @@ export interface FrameResult {
   error?: string
   aiResult?: Record<string, unknown>
   modelUsed?: string
+  checkpoints?: FrameCheckpoints
 }
 
 export interface ProcessingJob {
@@ -29,19 +37,37 @@ export interface QueuedVideo {
 }
 
 export const VISION_MODELS = [
-  { id: 'nvidia/nemotron-nano-12b-v2-vl:free',             label: 'Nemotron Nano 12B (NVIDIA)' },
-  { id: 'qwen/qwen2.5-vl-72b-instruct:free',               label: 'Qwen 2.5 VL 72B' },
-  { id: 'qwen/qwen2.5-vl-7b-instruct:free',                label: 'Qwen 2.5 VL 7B' },
-  { id: 'meta-llama/llama-4-scout:free',                   label: 'Llama 4 Scout (Meta)' },
-  { id: 'meta-llama/llama-4-maverick:free',                label: 'Llama 4 Maverick (Meta)' },
-  { id: 'google/gemini-2.0-flash-exp:free',                label: 'Gemini 2.0 Flash (Google)' },
-  { id: 'google/gemma-3-27b-it:free',                      label: 'Gemma 3 27B (Google)' },
-  { id: 'google/gemma-3-12b-it:free',                      label: 'Gemma 3 12B (Google)' },
-  { id: 'mistralai/mistral-small-3.1-24b-instruct:free',   label: 'Mistral Small 3.1 24B' },
-  { id: 'mistralai/mistral-small-3.2-24b-instruct:free',   label: 'Mistral Small 3.2 24B' },
-  { id: 'microsoft/phi-4-multimodal-instruct:free',        label: 'Phi-4 Multimodal (Microsoft)' },
-  { id: 'bytedance-research/ui-tars-72b:free',             label: 'UI-TARS 72B (ByteDance)' },
-  { id: 'moonshotai/kimi-vl-a3b-thinking:free',            label: 'Kimi VL A3B (Moonshot)' },
+  // ── NVIDIA ──────────────────────────────────────────────────────────────
+  { id: 'nvidia/nemotron-nano-12b-v2-vl:free',               label: 'Nemotron Nano 12B VL',        provider: 'NVIDIA'     },
+  // ── Qwen / Alibaba ───────────────────────────────────────────────────────
+  { id: 'qwen/qwen2.5-vl-72b-instruct:free',                 label: 'Qwen 2.5 VL 72B',             provider: 'Alibaba'    },
+  { id: 'qwen/qwen2.5-vl-7b-instruct:free',                  label: 'Qwen 2.5 VL 7B',              provider: 'Alibaba'    },
+  { id: 'qwen/qwen2-vl-72b-instruct:free',                   label: 'Qwen2 VL 72B',                provider: 'Alibaba'    },
+  { id: 'qwen/qwen2-vl-7b-instruct:free',                    label: 'Qwen2 VL 7B',                 provider: 'Alibaba'    },
+  // ── Meta Llama ───────────────────────────────────────────────────────────
+  { id: 'meta-llama/llama-4-scout:free',                     label: 'Llama 4 Scout',               provider: 'Meta'       },
+  { id: 'meta-llama/llama-4-maverick:free',                  label: 'Llama 4 Maverick',            provider: 'Meta'       },
+  { id: 'meta-llama/llama-3.2-90b-vision-instruct:free',     label: 'Llama 3.2 90B Vision',        provider: 'Meta'       },
+  { id: 'meta-llama/llama-3.2-11b-vision-instruct:free',     label: 'Llama 3.2 11B Vision',        provider: 'Meta'       },
+  // ── Google ───────────────────────────────────────────────────────────────
+  { id: 'google/gemini-2.0-flash-exp:free',                  label: 'Gemini 2.0 Flash Exp',        provider: 'Google'     },
+  { id: 'google/gemini-2.5-flash-preview-05-20:free',        label: 'Gemini 2.5 Flash Preview',    provider: 'Google'     },
+  { id: 'google/gemma-3-27b-it:free',                        label: 'Gemma 3 27B',                 provider: 'Google'     },
+  { id: 'google/gemma-3-12b-it:free',                        label: 'Gemma 3 12B',                 provider: 'Google'     },
+  { id: 'google/gemma-3-4b-it:free',                         label: 'Gemma 3 4B',                  provider: 'Google'     },
+  // ── Mistral ──────────────────────────────────────────────────────────────
+  { id: 'mistralai/mistral-small-3.2-24b-instruct:free',     label: 'Mistral Small 3.2 24B',       provider: 'Mistral'    },
+  { id: 'mistralai/mistral-small-3.1-24b-instruct:free',     label: 'Mistral Small 3.1 24B',       provider: 'Mistral'    },
+  // ── Microsoft ────────────────────────────────────────────────────────────
+  { id: 'microsoft/phi-4-multimodal-instruct:free',          label: 'Phi-4 Multimodal',            provider: 'Microsoft'  },
+  { id: 'microsoft/phi-4-vision-instruct:free',              label: 'Phi-4 Vision',                provider: 'Microsoft'  },
+  // ── ByteDance ────────────────────────────────────────────────────────────
+  { id: 'bytedance-research/ui-tars-72b:free',               label: 'UI-TARS 72B',                 provider: 'ByteDance'  },
+  // ── Moonshot ─────────────────────────────────────────────────────────────
+  { id: 'moonshotai/kimi-vl-a3b-thinking:free',              label: 'Kimi VL A3B Thinking',        provider: 'Moonshot'   },
+  // ── InternLM ─────────────────────────────────────────────────────────────
+  { id: 'internlm/internvl3-14b:free',                       label: 'InternVL3 14B',               provider: 'InternLM'   },
+  { id: 'internlm/internvl3-2b:free',                        label: 'InternVL3 2B',                provider: 'InternLM'   },
 ]
 
 interface ProcessingContextValue {
@@ -257,6 +283,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
     const results: FrameResult[] = []
     let prevThumb: HTMLCanvasElement | null = null
+    let thumbnailUpdated = false
     let kept = 0
 
     cancelRef.current = false
@@ -326,8 +353,20 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
           const err = await res.json().catch(() => ({})) as { detail?: string }
           results.push({ timestamp: ts, status: 'error', error: err.detail ?? `HTTP ${res.status}` })
         } else {
-          const data = await res.json() as { id: string; ai_result: Record<string, unknown>; model_used?: string }
-          results.push({ timestamp: ts, status: 'ok', imageId: data.id, aiResult: data.ai_result, modelUsed: data.model_used })
+          const data = await res.json() as { id: string; file_path?: string; ai_result: Record<string, unknown>; model_used?: string }
+          const ai = data.ai_result ?? {}
+          const checkpoints: FrameCheckpoints = {
+            productCorrect:  (ai.checkpoint_product_correct  as boolean | null) ?? null,
+            filmWrapped:     (ai.checkpoint_film_wrapped      as boolean | null) ?? null,
+            awbAttached:     (ai.checkpoint_awb_attached      as boolean | null) ?? null,
+            barcodeReadable: (ai.checkpoint_barcode_readable  as boolean | null) ?? null,
+          }
+          results.push({ timestamp: ts, status: 'ok', imageId: data.id, aiResult: ai, modelUsed: data.model_used, checkpoints })
+          // Use first saved frame as video thumbnail
+          if (!thumbnailUpdated && data.file_path) {
+            thumbnailUpdated = true
+            supabase.from('videos').update({ thumbnail_path: data.file_path }).eq('id', videoId).then(() => {})
+          }
         }
       } catch (e) {
         results.push({ timestamp: ts, status: 'error', error: e instanceof Error ? e.message : 'unknown' })

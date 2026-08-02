@@ -58,7 +58,7 @@ VISION_MODELS = [
     "internlm/internvl3-14b:free",
 ]
 
-VISION_PROMPT = """You are a warehouse AI inspector. Analyze this video frame and return bounding boxes for every visible object.
+VISION_PROMPT = """You are a warehouse packaging QC inspector. Analyze this video frame, detect all objects with bounding boxes, and evaluate 4 packaging checkpoints.
 
 CRITICAL — BOUNDING BOX RULES:
 - x, y = top-left corner as PERCENTAGE of image width/height (0 to 100)
@@ -66,40 +66,54 @@ CRITICAL — BOUNDING BOX RULES:
 - Estimate carefully by looking at where each object actually sits in the image
 - Different objects MUST have different x,y coordinates — do NOT give same coordinates to all objects
 
-IMAGE GRID REFERENCE (helps you estimate positions):
+IMAGE GRID REFERENCE:
   Left edge=0%, Right edge=100%, Top=0%, Bottom=100%, Center=50%
   Top-left quadrant:    x≈5–45,  y≈5–45
   Top-right quadrant:   x≈55–90, y≈5–45
   Bottom-left quadrant: x≈5–45,  y≈55–90
   Bottom-right quadrant:x≈55–90, y≈55–90
 
-OBJECTS TO DETECT: cardboard_box, shipping_label, barcode_1d, qr_code, hand, tape_roll,
-  barcode_scanner, label_printer, knife_cutter, keyboard, mouse, plastic_bag, envelope,
-  person, conveyor_belt, rack, bin, pallet, package, stamp, sticker
+OBJECTS TO DETECT:
+  General: cardboard_box, plastic_bag, envelope, pallet, bin, rack, conveyor_belt, person, hand
+  Product: product_item, sku_label, package_surface
+  Wrapping: stretch_film, bubble_wrap, tape_roll
+  Labels: awb_label, shipping_label, stamp, sticker
+  Barcodes: barcode_1d, qr_code, barcode_scanner, label_printer
+
+PACKAGING CHECKPOINTS — evaluate from visual evidence only, set null if not visible:
+  CP1 checkpoint_product_correct: true if a product_item or sku_label is clearly visible in frame
+  CP2 checkpoint_film_wrapped: true if stretch_film or bubble_wrap visibly covers the package/box
+  CP3 checkpoint_awb_attached: true if an awb_label or shipping_label is stuck on the package surface
+  CP4 checkpoint_barcode_readable: true ONLY if barcode_1d or qr_code detected with confidence>=0.7 AND tracking_codes or barcodes is non-empty
 
 Return ONLY this JSON (no markdown, no explanation, no code block):
 {
   "objects": [
     {"label": "cardboard_box",  "confidence": 0.92, "x": 10, "y": 20, "width": 30, "height": 40, "type": "object"},
-    {"label": "shipping_label", "confidence": 0.88, "x": 15, "y": 25, "width": 12, "height": 6,  "type": "text"},
-    {"label": "hand",           "confidence": 0.95, "x": 65, "y": 55, "width": 15, "height": 20, "type": "object"},
-    {"label": "barcode_1d",     "confidence": 0.80, "x": 40, "y": 30, "width": 18, "height": 8,  "type": "text"}
+    {"label": "awb_label",      "confidence": 0.88, "x": 15, "y": 25, "width": 20, "height": 8,  "type": "text"},
+    {"label": "barcode_1d",     "confidence": 0.85, "x": 16, "y": 28, "width": 18, "height": 5,  "type": "text"},
+    {"label": "stretch_film",   "confidence": 0.80, "x": 5,  "y": 15, "width": 40, "height": 50, "type": "object"}
   ],
   "tracking_codes": ["VN123456789"],
   "barcodes": ["8935001234567"],
   "packaging_status": "ok",
   "package_count": 1,
-  "label_text": ["every", "word", "number", "code", "you", "can", "read", "in", "the", "image"],
+  "label_text": ["every", "visible", "text", "word", "code", "in", "image"],
   "confidence": 0.85,
-  "notes": ""
+  "notes": "",
+  "checkpoint_product_correct": true,
+  "checkpoint_film_wrapped": true,
+  "checkpoint_awb_attached": true,
+  "checkpoint_barcode_readable": true
 }
 
 RULES:
 - type = "object" for physical items, "text" for label/barcode/text regions
 - confidence = float 0.0–1.0
 - Include ALL visible objects even if partially cut off
-- Each object gets its OWN unique x,y position based on where it appears in image
-- label_text: extract EVERY piece of text visible in the image — product names, codes, numbers, addresses, dates, anything readable"""
+- Each object gets its OWN unique x,y position
+- label_text: extract EVERY piece of text visible — product names, codes, numbers, addresses, dates
+- checkpoint values: true/false/null only — null means that stage is not visible in this frame"""
 
 TEXT_ONLY_PROMPT = """You are an OCR assistant. Extract ALL text visible in this image — every word, number, code, date, address, product name, tracking number, barcode value — anything that can be read.
 
@@ -496,7 +510,11 @@ async def analyze_frame(
         ai_result = {
             "objects": [], "tracking_codes": [], "barcodes": [],
             "packaging_status": "unknown", "package_count": 0,
-            "label_text": [], "confidence": 0.0, "notes": f"parse_error: {parse_error_detail}"
+            "label_text": [], "confidence": 0.0, "notes": f"parse_error: {parse_error_detail}",
+            "checkpoint_product_correct": None,
+            "checkpoint_film_wrapped": None,
+            "checkpoint_awb_attached": None,
+            "checkpoint_barcode_readable": None,
         }
 
     # Normalize objects array — fix label/confidence field name variations across models
@@ -517,6 +535,30 @@ async def analyze_frame(
     label_text = list(ai_result.get("label_text") or [])
     label_text.extend(request.client_label_text)
     ai_result["label_text"] = label_text[:100]  # higher cap for text_only mode
+
+    # Normalize checkpoint fields — ensure they exist and are bool | None
+    def _to_bool_or_none(val) -> bool | None:
+        if val is True or val is False:
+            return val
+        if isinstance(val, str):
+            return True if val.lower() == 'true' else (False if val.lower() == 'false' else None)
+        return None
+
+    for cp_field in ('checkpoint_product_correct', 'checkpoint_film_wrapped',
+                     'checkpoint_awb_attached', 'checkpoint_barcode_readable'):
+        ai_result[cp_field] = _to_bool_or_none(ai_result.get(cp_field))
+
+    # Auto-derive CP4: if barcode confidence check not done by model, derive from data
+    if ai_result['checkpoint_barcode_readable'] is None:
+        has_barcode_obj = any(
+            o.get('label') in ('barcode_1d', 'qr_code') and float(o.get('confidence', 0)) >= 0.7
+            for o in ai_result.get('objects', [])
+        )
+        has_code = bool(ai_result.get('tracking_codes') or ai_result.get('barcodes'))
+        if has_barcode_obj and has_code:
+            ai_result['checkpoint_barcode_readable'] = True
+        elif has_barcode_obj or has_code:
+            ai_result['checkpoint_barcode_readable'] = False
 
     # Upload frame to Supabase Storage (use resolved image_b64, not raw request which may be empty for URL re-analyze)
     try:
