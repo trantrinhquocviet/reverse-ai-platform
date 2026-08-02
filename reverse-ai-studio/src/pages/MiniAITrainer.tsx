@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Brain, Database, Play, Download, CheckCircle, Loader2, AlertCircle, BarChart3, Layers, HardDrive, Trash2, RefreshCw, Star } from 'lucide-react'
+import { Brain, Database, Play, Download, CheckCircle, Loader2, AlertCircle, BarChart3, Layers, HardDrive, Trash2, RefreshCw, Star, History, ChevronDown, ChevronUp } from 'lucide-react'
 import { supabase } from '@/services/api'
 import { cn } from '@/utils/cn'
 
@@ -39,6 +39,31 @@ interface ModelVersion {
 
 const VERSIONS_KEY = 'mini_ai_trainer_versions'
 const ACTIVE_KEY   = 'mini_ai_trainer_active'
+const HISTORY_KEY  = 'mini_ai_trainer_history'
+const MAX_HISTORY  = 50
+
+interface TestRecord {
+  id: string
+  versionId: string
+  versionNum: number
+  testedAt: string
+  filename: string
+  thumbnail: string  // small base64 ~10KB
+  results: {
+    packaging: { label: string; conf: number }
+    hasLabel:  { label: string; conf: number }
+    hasHand:   { label: string; conf: number }
+    object:    { label: string; conf: number }
+  }
+}
+
+function loadHistory(): TestRecord[] {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') } catch { return [] }
+}
+function saveHistory(h: TestRecord[]) {
+  // keep newest MAX_HISTORY, trim thumbnails if storage pressure
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(-MAX_HISTORY)))
+}
 
 function idbKey(id: string) { return `indexeddb://${id}` }
 
@@ -99,6 +124,8 @@ export function MiniAITrainer() {
   const [versions, setVersions] = useState<ModelVersion[]>(loadVersions)
   const [activeId, setActiveId] = useState<string | null>(() => localStorage.getItem(ACTIVE_KEY))
   const [loadingId, setLoadingId] = useState<string | null>(null)
+  const [history, setHistory] = useState<TestRecord[]>(loadHistory)
+  const [showHistory, setShowHistory] = useState(false)
   const [testResult, setTestResult] = useState<{
     packaging: { label: string; conf: number }
     hasLabel:  { label: string; conf: number }
@@ -335,7 +362,35 @@ export function MiniAITrainer() {
         toResult(preds[3], OBJECT_LABELS),
       ])
       input.dispose(); preds.forEach((t: any) => t.dispose())
-      setTestResult({ packaging, hasLabel, hasHand, object })
+      const results = { packaging, hasLabel, hasHand, object }
+      setTestResult(results)
+
+      // Generate small thumbnail (~64px wide) for history
+      const thumb = (() => {
+        try {
+          const c = document.createElement('canvas')
+          const scale = 64 / img.naturalWidth
+          c.width = 64; c.height = Math.round(img.naturalHeight * scale)
+          c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height)
+          return c.toDataURL('image/jpeg', 0.5)
+        } catch { return '' }
+      })()
+
+      const activeVer = loadVersions().find(v => v.id === activeId)
+      if (activeId && activeVer) {
+        const record: TestRecord = {
+          id: crypto.randomUUID(),
+          versionId: activeId,
+          versionNum: activeVer.versionNum,
+          testedAt: new Date().toISOString(),
+          filename: file.name,
+          thumbnail: thumb,
+          results,
+        }
+        const next = [...loadHistory(), record]
+        saveHistory(next)
+        setHistory(next.slice(-MAX_HISTORY))
+      }
     }
     img.src = url
   }
@@ -673,6 +728,116 @@ export function MiniAITrainer() {
           </div>
         </div>
       </div>
+
+      {/* ── Test History ───────────────────────────────────────────────────── */}
+      {history.length > 0 && (
+        <div className="rounded-[14px] bg-[#111118] border border-[#1e1e2a] overflow-hidden">
+          <button
+            onClick={() => setShowHistory(h => !h)}
+            className="w-full flex items-center gap-2 p-4 hover:bg-[#16161f] transition-colors"
+          >
+            <History className="w-4 h-4 text-[#55556a]" />
+            <h3 className="text-sm font-semibold text-[#f0f0f5]">Test History</h3>
+            <span className="text-[10px] text-[#55556a] ml-1">{history.length} records</span>
+            <button
+              onClick={e => { e.stopPropagation(); const next: TestRecord[] = []; saveHistory(next); setHistory(next) }}
+              className="ml-auto mr-2 text-[#55556a] hover:text-red-400 transition-colors text-[10px]"
+            >
+              clear all
+            </button>
+            {showHistory ? <ChevronUp className="w-4 h-4 text-[#55556a]" /> : <ChevronDown className="w-4 h-4 text-[#55556a]" />}
+          </button>
+
+          {showHistory && (
+            <div className="border-t border-[#1e1e2a] p-4 space-y-3">
+              {/* Version comparison summary */}
+              {versions.length > 1 && (() => {
+                // For each version, compute avg conf per task across its test records
+                const taskKeys = ['packaging', 'hasLabel', 'hasHand', 'object'] as const
+                return (
+                  <div className="bg-[#0d0d14] rounded-[10px] p-3 space-y-2 mb-4">
+                    <p className="text-[10px] text-[#55556a] uppercase tracking-wider">Version Comparison (avg confidence)</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-[10px]">
+                        <thead>
+                          <tr>
+                            <th className="text-left text-[#44445a] pb-2 pr-4">Version</th>
+                            <th className="text-left text-[#44445a] pb-2 pr-3">Tests</th>
+                            {TASK_INFO.map(t => (
+                              <th key={t.key} className="text-left text-[#44445a] pb-2 pr-3">{t.icon}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {versions.map(ver => {
+                            const vRecs = history.filter(r => r.versionId === ver.id)
+                            if (!vRecs.length) return null
+                            const avgConf = (key: typeof taskKeys[number]) =>
+                              Math.round(vRecs.reduce((s, r) => s + r.results[key].conf, 0) / vRecs.length)
+                            return (
+                              <tr key={ver.id} className={cn(ver.id === activeId && 'text-[#a89bff]')}>
+                                <td className="pr-4 pb-1.5 font-medium">
+                                  {ver.id === activeId && <Star className="w-2.5 h-2.5 inline mr-1" fill="currentColor" />}
+                                  v{ver.versionNum}
+                                </td>
+                                <td className="pr-3 pb-1.5 text-[#55556a]">{vRecs.length}</td>
+                                {taskKeys.map(k => (
+                                  <td key={k} className={cn('pr-3 pb-1.5 font-medium',
+                                    avgConf(k) >= 80 ? 'text-green-400' : avgConf(k) >= 60 ? 'text-yellow-400' : 'text-[#55556a]'
+                                  )}>
+                                    {avgConf(k)}%
+                                  </td>
+                                ))}
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* Individual records — newest first */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                {[...history].reverse().map(rec => (
+                  <div key={rec.id} className="bg-[#1a1a24] rounded-[10px] overflow-hidden">
+                    {rec.thumbnail
+                      ? <img src={rec.thumbnail} alt={rec.filename} className="w-full aspect-video object-cover" />
+                      : <div className="w-full aspect-video bg-[#0d0d14] flex items-center justify-center text-[#44445a] text-[10px]">no thumb</div>
+                    }
+                    <div className="p-2 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[9px] text-[#a89bff] font-medium">v{rec.versionNum}</span>
+                        <span className="text-[9px] text-[#44445a]">
+                          {new Date(rec.testedAt).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })}
+                        </span>
+                      </div>
+                      <p className="text-[9px] text-[#55556a] truncate">{rec.filename}</p>
+                      <div className="space-y-0.5">
+                        {([
+                          { icon: '📦', label: rec.results.packaging.label, conf: rec.results.packaging.conf,
+                            color: rec.results.packaging.label === 'ok' ? 'text-green-400' : rec.results.packaging.label === 'damaged' ? 'text-red-400' : 'text-yellow-400' },
+                          { icon: '🏷️', label: rec.results.hasLabel.label, conf: rec.results.hasLabel.conf,
+                            color: rec.results.hasLabel.label === 'yes' ? 'text-[#a89bff]' : 'text-[#44445a]' },
+                          { icon: '✋', label: rec.results.hasHand.label, conf: rec.results.hasHand.conf,
+                            color: rec.results.hasHand.label === 'yes' ? 'text-[#a89bff]' : 'text-[#44445a]' },
+                          { icon: '🔍', label: rec.results.object.label.replace(/_/g, ' '), conf: rec.results.object.conf, color: 'text-[#8888a8]' },
+                        ] as const).map(({ icon, label, conf, color }) => (
+                          <div key={icon} className="flex items-center justify-between">
+                            <span className="text-[9px]">{icon} <span className={cn('capitalize', color)}>{label}</span></span>
+                            <span className="text-[9px] text-[#44445a]">{conf}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
