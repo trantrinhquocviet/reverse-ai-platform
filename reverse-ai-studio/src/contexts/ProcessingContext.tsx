@@ -234,7 +234,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     const SAMPLE_INTERVAL = 2
     const OFFSET = 3
     const MOTION_THRESHOLD = 0.04   // 4% pixels changed → consider it motion
-    const EDGE_THRESHOLD = 0.08     // 8% edge pixels → likely has text/labels
+    const EDGE_THRESHOLD = 0.04     // 4% edge pixels — lowered to keep more frames with labels/hands
 
     const duration = videoEl.duration
     const candidates: number[] = []

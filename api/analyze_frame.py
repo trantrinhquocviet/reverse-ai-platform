@@ -75,6 +75,27 @@ class AnalyzeFrameRequest(BaseModel):
     client_label_text: list[str] = []
     preferred_model: str = ""  # empty = use default fallback order
 
+# Normalize objects array — fix common AI output quirks
+def normalize_objects(raw: list) -> list:
+    normalized = []
+    for obj in raw:
+        if not isinstance(obj, dict):
+            continue
+        label = str(obj.get("label") or obj.get("class") or obj.get("name") or "").strip().lower().replace(" ", "_")
+        if not label:
+            continue
+        conf = obj.get("confidence") or obj.get("score") or obj.get("prob") or 0.5
+        try:
+            conf = float(conf)
+        except (TypeError, ValueError):
+            conf = 0.5
+        normalized.append({
+            "label": label,
+            "confidence": round(min(max(conf, 0.0), 1.0), 3),
+            "region": obj.get("region") or obj.get("location") or "unknown",
+        })
+    return normalized
+
 
 async def verify_jwt(token: str) -> dict:
     async with httpx.AsyncClient() as client:
@@ -177,12 +198,16 @@ async def upload_to_supabase_storage(image_base64: str, video_id: str, filename:
     return f"{SUPABASE_URL}/storage/v1/object/public/videos/{storage_path}"
 
 
-async def insert_dataset_image(video_id: str, file_path: str, image_name: str, ai_result: dict) -> dict:
+async def upsert_dataset_image(
+    video_id: str, file_path: str, image_name: str,
+    ai_result: dict, frame_timestamp: float,
+) -> dict:
     record = {
         "id": str(uuid.uuid4()),
         "video_id": video_id,
         "file_path": file_path,
         "image_name": image_name,
+        "frame_timestamp": frame_timestamp,
         "ai_result": ai_result,
         "split_type": "train",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -194,8 +219,10 @@ async def insert_dataset_image(video_id: str, file_path: str, image_name: str, a
                 "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
                 "apikey": SUPABASE_SERVICE_ROLE_KEY,
                 "Content-Type": "application/json",
-                "Prefer": "return=representation",
+                # Upsert on (video_id, frame_timestamp) — reprocessing same video won't duplicate
+                "Prefer": "resolution=merge-duplicates,return=representation",
             },
+            params={"on_conflict": "video_id,frame_timestamp"},
             json=record,
         )
         resp.raise_for_status()
@@ -215,16 +242,24 @@ async def analyze_frame(
 
     # Call vision AI (OpenRouter) with auto-fallback
     model_used = request.preferred_model or VISION_MODELS[0]
+    parse_error_detail = None
     try:
         ai_result, model_used = await call_vision_ai(request.image_base64, request.preferred_model)
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
+        parse_error_detail = str(e)
         ai_result = {
             "objects": [], "tracking_codes": [], "barcodes": [],
             "packaging_status": "unknown", "package_count": 0,
-            "label_text": [], "confidence": 0.0, "notes": "parse_error"
+            "label_text": [], "confidence": 0.0, "notes": f"parse_error: {parse_error_detail}"
         }
+
+    # Normalize objects array — fix label/confidence field name variations across models
+    if isinstance(ai_result.get("objects"), list):
+        ai_result["objects"] = normalize_objects(ai_result["objects"])
+    else:
+        ai_result["objects"] = []
 
     # Merge client-side results (ZXing barcodes + Tesseract OCR tracking codes)
     barcodes = set(ai_result.get("barcodes") or [])
@@ -247,15 +282,16 @@ async def analyze_frame(
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"Storage upload error: {e.response.text}")
 
-    # Insert into dataset_images
+    # Upsert into dataset_images (no duplicates on reprocess)
     try:
-        record = await insert_dataset_image(
+        record = await upsert_dataset_image(
             video_id=request.video_id,
             file_path=public_url,
             image_name=request.filename,
             ai_result=ai_result,
+            frame_timestamp=request.frame_timestamp,
         )
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail=f"Database insert error: {e.response.text}")
+        raise HTTPException(status_code=502, detail=f"Database upsert error: {e.response.text}")
 
     return {**record, "model_used": model_used}
