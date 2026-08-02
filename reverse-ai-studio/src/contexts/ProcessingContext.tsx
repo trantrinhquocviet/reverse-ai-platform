@@ -29,11 +29,19 @@ export interface QueuedVideo {
 }
 
 export const VISION_MODELS = [
-  { id: 'nvidia/nemotron-nano-12b-v2-vl:free',          label: 'Nemotron Nano 12B (NVIDIA)' },
-  { id: 'qwen/qwen2.5-vl-72b-instruct:free',            label: 'Qwen 2.5 VL 72B' },
-  { id: 'meta-llama/llama-4-scout:free',                label: 'Llama 4 Scout (Meta)' },
-  { id: 'google/gemma-3-27b-it:free',                   label: 'Gemma 3 27B (Google)' },
-  { id: 'mistralai/mistral-small-3.1-24b-instruct:free', label: 'Mistral Small 3.1 24B' },
+  { id: 'nvidia/nemotron-nano-12b-v2-vl:free',             label: 'Nemotron Nano 12B (NVIDIA)' },
+  { id: 'qwen/qwen2.5-vl-72b-instruct:free',               label: 'Qwen 2.5 VL 72B' },
+  { id: 'qwen/qwen2.5-vl-7b-instruct:free',                label: 'Qwen 2.5 VL 7B' },
+  { id: 'meta-llama/llama-4-scout:free',                   label: 'Llama 4 Scout (Meta)' },
+  { id: 'meta-llama/llama-4-maverick:free',                label: 'Llama 4 Maverick (Meta)' },
+  { id: 'google/gemini-2.0-flash-exp:free',                label: 'Gemini 2.0 Flash (Google)' },
+  { id: 'google/gemma-3-27b-it:free',                      label: 'Gemma 3 27B (Google)' },
+  { id: 'google/gemma-3-12b-it:free',                      label: 'Gemma 3 12B (Google)' },
+  { id: 'mistralai/mistral-small-3.1-24b-instruct:free',   label: 'Mistral Small 3.1 24B' },
+  { id: 'mistralai/mistral-small-3.2-24b-instruct:free',   label: 'Mistral Small 3.2 24B' },
+  { id: 'microsoft/phi-4-multimodal-instruct:free',        label: 'Phi-4 Multimodal (Microsoft)' },
+  { id: 'bytedance-research/ui-tars-72b:free',             label: 'UI-TARS 72B (ByteDance)' },
+  { id: 'moonshotai/kimi-vl-a3b-thinking:free',            label: 'Kimi VL A3B (Moonshot)' },
 ]
 
 interface ProcessingContextValue {

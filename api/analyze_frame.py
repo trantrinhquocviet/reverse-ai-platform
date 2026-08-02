@@ -26,11 +26,19 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 # Ordered fallback list — tried in sequence when rate-limited (429) or unavailable
 VISION_MODELS = [
-    "nvidia/nemotron-nano-12b-v2-vl:free",
-    "qwen/qwen2.5-vl-72b-instruct:free",
-    "meta-llama/llama-4-scout:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free",       # fast, warehouse-tuned default
+    "qwen/qwen2.5-vl-72b-instruct:free",          # strong OCR + object detection
+    "qwen/qwen2.5-vl-7b-instruct:free",           # lighter Qwen VL
+    "meta-llama/llama-4-scout:free",              # multimodal scout
+    "meta-llama/llama-4-maverick:free",           # larger llama4 vision
+    "google/gemini-2.0-flash-exp:free",           # Gemini 2.0 Flash — excellent OCR
     "google/gemma-3-27b-it:free",
+    "google/gemma-3-12b-it:free",                 # lighter Gemma 3
     "mistralai/mistral-small-3.1-24b-instruct:free",
+    "mistralai/mistral-small-3.2-24b-instruct:free", # newer Mistral Small
+    "microsoft/phi-4-multimodal-instruct:free",   # Phi-4 multimodal
+    "bytedance-research/ui-tars-72b:free",        # UI/document understanding
+    "moonshotai/kimi-vl-a3b-thinking:free",       # Kimi VL reasoning
 ]
 
 VISION_PROMPT = """You are a warehouse AI inspector analyzing a packing/sorting video frame.
