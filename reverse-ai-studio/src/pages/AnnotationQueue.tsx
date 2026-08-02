@@ -260,6 +260,9 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
   const [editBarcodes, setEditBarcodes] = useState((frame.ai_result?.barcodes ?? []).join('\n'))
   const [localAi, setLocalAi] = useState(frame.ai_result)
   const [reanalyzing, setReanalyzing] = useState(false)
+
+  // Sync when AI result updates after re-analyze refetch
+  useEffect(() => { setLocalAi(frame.ai_result) }, [frame.ai_result])
   const [reanalyzeErr, setReanalyzeErr] = useState<string | null>(null)
 
   const handleReanalyze = useCallback(async () => {

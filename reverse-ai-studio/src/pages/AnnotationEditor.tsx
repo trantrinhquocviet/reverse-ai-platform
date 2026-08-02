@@ -195,6 +195,8 @@ export function AnnotationEditor() {
   // ── Crop + Re-analyze ────────────────────────────────────────────────────────
   const [cropRect, setCropRect] = useState<CropRect | null>(null)
   const [reanalyzing, setReanalyzing] = useState(false)
+  const [textOnly, setTextOnly] = useState(false)
+  const [extractedText, setExtractedText] = useState<string[]>([])
   const [reanalyzeError, setReanalyzeError] = useState<string | null>(null)
 
   const toPercent = useCallback((cx: number, cy: number) => {
@@ -239,10 +241,16 @@ export function AnnotationEditor() {
           client_tracking_codes: [],
           client_label_text: [],
           preferred_model: '',
+          text_only: textOnly,
         }),
       })
-      const data = await resp.json() as { ai_result?: { objects?: RawObject[] }; detail?: string }
+      const data = await resp.json() as { ai_result?: { objects?: RawObject[]; label_text?: string[] }; detail?: string }
       if (!resp.ok) throw new Error(data.detail ?? `HTTP ${resp.status}`)
+
+      // Store extracted text for display
+      if (data.ai_result?.label_text?.length) {
+        setExtractedText(data.ai_result.label_text)
+      }
 
       // Convert new AI objects to boxes, merge with existing manual boxes
       const newAiBoxes: AnnotationBox[] = (data.ai_result?.objects ?? []).map((o, i) => ({
@@ -793,6 +801,20 @@ export function AnnotationEditor() {
 
           <div className="w-px h-6 bg-[#1e1e2a] mx-1" />
 
+          {/* Text only toggle */}
+          <button
+            onClick={() => setTextOnly(v => !v)}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors border',
+              textOnly
+                ? 'bg-[#38bdf820] text-[#38bdf8] border-[#38bdf840]'
+                : 'bg-[#ffffff08] text-[#55556a] border-[#ffffff10] hover:text-[#8888a8]'
+            )}
+            title="Chỉ trích xuất text — không detect object"
+          >
+            T
+          </button>
+
           {/* Re-analyze */}
           <button
             onClick={reanalyze}
@@ -801,18 +823,27 @@ export function AnnotationEditor() {
               'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
               cropRect
                 ? 'bg-[#fbbf2420] text-[#fbbf24] border border-[#fbbf2440] hover:bg-[#fbbf2430]'
+                : textOnly
+                ? 'bg-[#38bdf820] text-[#38bdf8] border border-[#38bdf840] hover:bg-[#38bdf830]'
                 : 'bg-[#7c6af720] text-[#a89bff] border border-[#7c6af740] hover:bg-[#7c6af730]'
             )}
           >
             {reanalyzing
               ? <Loader2 className="w-4 h-4 animate-spin" />
               : <RefreshCw className="w-4 h-4" />}
-            {cropRect ? 'Re-analyze vùng' : 'Re-analyze AI'}
+            {cropRect ? 'Re-analyze vùng' : textOnly ? 'Extract Text' : 'Re-analyze AI'}
           </button>
           {reanalyzeError && (
             <span className="text-[11px] text-[#f87171] truncate max-w-40" title={reanalyzeError}>
               {reanalyzeError}
             </span>
+          )}
+          {extractedText.length > 0 && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#38bdf810] border border-[#38bdf820] max-w-xs overflow-x-auto">
+              <span className="text-[10px] text-[#38bdf8] font-medium flex-shrink-0">Text:</span>
+              <span className="text-[11px] text-[#e0f2fe] font-mono whitespace-nowrap">{extractedText.join(' · ')}</span>
+              <button onClick={() => setExtractedText([])} className="text-[#38bdf860] hover:text-[#38bdf8] flex-shrink-0 ml-1">✕</button>
+            </div>
           )}
         </div>
         <button

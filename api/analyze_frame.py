@@ -26,81 +26,219 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 # Ordered fallback list — tried in sequence when rate-limited (429) or unavailable
 VISION_MODELS = [
-    "nvidia/nemotron-nano-12b-v2-vl:free",       # fast, warehouse-tuned default
-    "qwen/qwen2.5-vl-72b-instruct:free",          # strong OCR + object detection
-    "qwen/qwen2.5-vl-7b-instruct:free",           # lighter Qwen VL
-    "meta-llama/llama-4-scout:free",              # multimodal scout
-    "meta-llama/llama-4-maverick:free",           # larger llama4 vision
-    "google/gemini-2.0-flash-exp:free",           # Gemini 2.0 Flash — excellent OCR
+    # NVIDIA
+    "nvidia/nemotron-nano-12b-v2-vl:free",
+    # Qwen / Alibaba
+    "qwen/qwen2.5-vl-72b-instruct:free",
+    "qwen/qwen2.5-vl-7b-instruct:free",
+    "qwen/qwen2-vl-72b-instruct:free",
+    "qwen/qwen2-vl-7b-instruct:free",
+    # Meta Llama
+    "meta-llama/llama-4-scout:free",
+    "meta-llama/llama-4-maverick:free",
+    "meta-llama/llama-3.2-90b-vision-instruct:free",
+    "meta-llama/llama-3.2-11b-vision-instruct:free",
+    # Google
+    "google/gemini-2.0-flash-exp:free",
+    "google/gemini-2.5-flash-preview-05-20:free",
     "google/gemma-3-27b-it:free",
-    "google/gemma-3-12b-it:free",                 # lighter Gemma 3
+    "google/gemma-3-12b-it:free",
+    "google/gemma-3-4b-it:free",
+    # Mistral
+    "mistralai/mistral-small-3.2-24b-instruct:free",
     "mistralai/mistral-small-3.1-24b-instruct:free",
-    "mistralai/mistral-small-3.2-24b-instruct:free", # newer Mistral Small
-    "microsoft/phi-4-multimodal-instruct:free",   # Phi-4 multimodal
-    "bytedance-research/ui-tars-72b:free",        # UI/document understanding
-    "moonshotai/kimi-vl-a3b-thinking:free",       # Kimi VL reasoning
+    # Microsoft
+    "microsoft/phi-4-multimodal-instruct:free",
+    "microsoft/phi-4-vision-instruct:free",
+    # ByteDance
+    "bytedance-research/ui-tars-72b:free",
+    # Moonshot
+    "moonshotai/kimi-vl-a3b-thinking:free",
+    # InternLM
+    "internlm/internvl3-14b:free",
+    "internlm/internvl3-2b:free",
 ]
 
-VISION_PROMPT = """You are a warehouse AI inspector analyzing a packing/sorting video frame.
+VISION_PROMPT = """You are a warehouse AI inspector. Analyze this video frame and return bounding boxes for every visible object.
 
-Your tasks:
-1. OBJECT DETECTION — identify every visible object and its bounding region (rough %).
-   Common objects: cardboard_box, shipping_label, barcode_1d, qr_code, hand, tape_roll,
-   barcode_scanner, label_printer, knife_cutter, keyboard, mouse, plastic_bag, envelope.
-2. TRACKING CODES — extract all order/tracking numbers from labels (numeric or alphanumeric).
-3. OCR — extract all readable text from labels and packages.
-4. PACKAGING STATUS — "ok", "damaged", or "unknown".
-5. PACKAGE COUNT — how many packages are visible.
+CRITICAL — BOUNDING BOX RULES:
+- x, y = top-left corner as PERCENTAGE of image width/height (0 to 100)
+- width, height = box size as PERCENTAGE of image width/height (0 to 100)
+- Estimate carefully by looking at where each object actually sits in the image
+- Different objects MUST have different x,y coordinates — do NOT give same coordinates to all objects
 
-Return ONLY valid JSON (no markdown, no code fences):
+IMAGE GRID REFERENCE (helps you estimate positions):
+  Left edge=0%, Right edge=100%, Top=0%, Bottom=100%, Center=50%
+  Top-left quadrant:    x≈5–45,  y≈5–45
+  Top-right quadrant:   x≈55–90, y≈5–45
+  Bottom-left quadrant: x≈5–45,  y≈55–90
+  Bottom-right quadrant:x≈55–90, y≈55–90
+
+OBJECTS TO DETECT: cardboard_box, shipping_label, barcode_1d, qr_code, hand, tape_roll,
+  barcode_scanner, label_printer, knife_cutter, keyboard, mouse, plastic_bag, envelope,
+  person, conveyor_belt, rack, bin, pallet, package, stamp, sticker
+
+Return ONLY this JSON (no markdown, no explanation, no code block):
 {
   "objects": [
-    {"label": "cardboard_box", "confidence": 0.95, "region": "center"},
-    {"label": "shipping_label", "confidence": 0.92, "region": "center-left"},
-    {"label": "hand", "confidence": 0.98, "region": "bottom-left"},
-    {"label": "barcode_1d", "confidence": 0.90, "region": "center-right"}
+    {"label": "cardboard_box",  "confidence": 0.92, "x": 10, "y": 20, "width": 30, "height": 40, "type": "object"},
+    {"label": "shipping_label", "confidence": 0.88, "x": 15, "y": 25, "width": 12, "height": 6,  "type": "text"},
+    {"label": "hand",           "confidence": 0.95, "x": 65, "y": 55, "width": 15, "height": 20, "type": "object"},
+    {"label": "barcode_1d",     "confidence": 0.80, "x": 40, "y": 30, "width": 18, "height": 8,  "type": "text"}
   ],
-  "tracking_codes": ["string"],
-  "barcodes": [],
-  "packaging_status": "ok|damaged|unknown",
-  "package_count": 0,
-  "label_text": ["string"],
-  "confidence": 0.0,
-  "notes": "string"
+  "tracking_codes": ["VN123456789"],
+  "barcodes": ["8935001234567"],
+  "packaging_status": "ok",
+  "package_count": 1,
+  "label_text": ["every", "word", "number", "code", "you", "can", "read", "in", "the", "image"],
+  "confidence": 0.85,
+  "notes": ""
 }
 
-Region values: top-left, top-center, top-right, center-left, center, center-right, bottom-left, bottom-center, bottom-right.
-Confidence: float 0.0–1.0. Include ALL visible objects even partially visible."""
+RULES:
+- type = "object" for physical items, "text" for label/barcode/text regions
+- confidence = float 0.0–1.0
+- Include ALL visible objects even if partially cut off
+- Each object gets its OWN unique x,y position based on where it appears in image
+- label_text: extract EVERY piece of text visible in the image — product names, codes, numbers, addresses, dates, anything readable"""
+
+TEXT_ONLY_PROMPT = """You are an OCR assistant. Extract ALL text visible in this image — every word, number, code, date, address, product name, tracking number, barcode value — anything that can be read.
+
+Return ONLY this JSON (no markdown, no explanation, no code block):
+{
+  "objects": [],
+  "tracking_codes": ["any tracking/shipment codes like VN123456789VN, 86185..."],
+  "barcodes": ["any barcode or QR values you can decode"],
+  "packaging_status": "unknown",
+  "package_count": 0,
+  "label_text": ["every", "single", "word", "number", "code", "visible", "in", "image"],
+  "confidence": 0.9,
+  "notes": "raw text extraction mode"
+}
+
+IMPORTANT: label_text must contain ALL readable text from the image, one token per entry. Do not skip anything."""
 
 
 class AnalyzeFrameRequest(BaseModel):
-    image_base64: str
+    image_base64: str = ""        # base64 string OR empty when image_url is provided
+    image_url: str = ""           # fetch image from URL on server side (avoids browser CORS)
+    crop: dict | None = None      # optional {x,y,width,height} in % to crop before analysis
     video_id: str
     frame_timestamp: float
     filename: str
     client_barcodes: list[str] = []
     client_tracking_codes: list[str] = []
     client_label_text: list[str] = []
-    preferred_model: str = ""  # empty = use default fallback order
+    preferred_model: str = ""
+    text_only: bool = False       # skip object detection, extract all visible text only
 
-# Normalize objects array — fix common AI output quirks
+# region text → approximate bounding box (fallback for old-format models)
+_REGION_COORDS: dict[str, tuple[float, float, float, float]] = {
+    "top-left":      (2,  2,  30, 28),
+    "top-center":    (35, 2,  30, 28),
+    "top-right":     (68, 2,  30, 28),
+    "center-left":   (2,  36, 30, 28),
+    "center":        (35, 36, 30, 28),
+    "center-right":  (68, 36, 30, 28),
+    "bottom-left":   (2,  70, 30, 28),
+    "bottom-center": (35, 70, 30, 28),
+    "bottom-right":  (68, 70, 30, 28),
+    "left":          (2,  36, 30, 28),
+    "right":         (68, 36, 30, 28),
+    "top":           (35, 2,  30, 28),
+    "bottom":        (35, 70, 30, 28),
+    "unknown":       (35, 36, 30, 28),
+}
+
 def normalize_objects(raw: list) -> list:
+    def _pct(val, fallback: float) -> float:
+        try:
+            v = float(val)
+            # If model returned normalized 0–1 instead of 0–100, scale up
+            if v <= 1.0:
+                v = v * 100.0
+            return round(min(max(v, 0.0), 100.0), 2)
+        except (TypeError, ValueError):
+            return fallback
+
     normalized = []
-    for obj in raw:
+    # Track used positions to spread overlapping boxes
+    used_positions: list[tuple[float, float]] = []
+
+    for i, obj in enumerate(raw):
         if not isinstance(obj, dict):
             continue
         label = str(obj.get("label") or obj.get("class") or obj.get("name") or "").strip().lower().replace(" ", "_")
         if not label:
             continue
+
         conf = obj.get("confidence") or obj.get("score") or obj.get("prob") or 0.5
         try:
             conf = float(conf)
+            if conf > 1.0:
+                conf = conf / 100.0
+            conf = round(min(max(conf, 0.0), 1.0), 3)
         except (TypeError, ValueError):
             conf = 0.5
+
+        # Try to get coordinates — prefer x/y/width/height, fallback to bbox dict, then region text
+        has_coords = any(obj.get(k) is not None for k in ("x", "y", "width", "height", "x1", "y1", "w", "h"))
+
+        if has_coords:
+            x = _pct(obj.get("x") if obj.get("x") is not None else obj.get("x1"), None)
+            y = _pct(obj.get("y") if obj.get("y") is not None else obj.get("y1"), None)
+            w = _pct(obj.get("width") if obj.get("width") is not None else obj.get("w"), None)
+            h = _pct(obj.get("height") if obj.get("height") is not None else obj.get("h"), None)
+
+            # Handle x1,y1,x2,y2 format → convert to x,y,w,h
+            if w is None and obj.get("x2") is not None:
+                x2 = _pct(obj.get("x2"), 0.0)
+                w = round(abs(x2 - (x or 0)), 2)
+            if h is None and obj.get("y2") is not None:
+                y2 = _pct(obj.get("y2"), 0.0)
+                h = round(abs(y2 - (y or 0)), 2)
+
+            x = x if x is not None else 5.0
+            y = y if y is not None else 5.0
+            w = w if w is not None else 20.0
+            h = h if h is not None else 20.0
+        elif obj.get("bbox") and isinstance(obj["bbox"], (list, dict)):
+            # Some models return {"bbox": [x, y, w, h]} or {"bbox": {"x":..}}
+            bbox = obj["bbox"]
+            if isinstance(bbox, list) and len(bbox) >= 4:
+                x, y, w, h = (_pct(bbox[0], 5.0), _pct(bbox[1], 5.0),
+                               _pct(bbox[2], 20.0), _pct(bbox[3], 20.0))
+            elif isinstance(bbox, dict):
+                x = _pct(bbox.get("x") or bbox.get("left"), 5.0)
+                y = _pct(bbox.get("y") or bbox.get("top"), 5.0)
+                w = _pct(bbox.get("width") or bbox.get("w"), 20.0)
+                h = _pct(bbox.get("height") or bbox.get("h"), 20.0)
+            else:
+                x, y, w, h = 5.0, 5.0, 20.0, 20.0
+        else:
+            # Fallback: convert region text to approximate coords
+            region = str(obj.get("region") or obj.get("location") or "center").lower().strip()
+            rx, ry, rw, rh = _REGION_COORDS.get(region, _REGION_COORDS["center"])
+            # Offset slightly by index so overlapping region-boxes don't stack exactly
+            x, y, w, h = rx + (i % 3) * 2, ry + (i // 3) * 4, rw, rh
+
+        # Spread boxes that land on the exact same spot (model bug)
+        pos_key = (round(x), round(y))
+        if pos_key in used_positions:
+            offset = used_positions.count(pos_key) * 5
+            x = min(x + offset, 75.0)
+            y = min(y + offset * 0.5, 70.0)
+        used_positions.append((round(x), round(y)))
+
         normalized.append({
             "label": label,
-            "confidence": round(min(max(conf, 0.0), 1.0), 3),
-            "region": obj.get("region") or obj.get("location") or "unknown",
+            "confidence": conf,
+            "x": x,
+            "y": y,
+            "width": w,
+            "height": h,
+            "type": obj.get("type") or "object",
+            "status": "pending",
         })
     return normalized
 
@@ -120,11 +258,41 @@ async def verify_jwt(token: str) -> dict:
 
 
 import re as _re
+import base64 as _b64
 
-async def _call_one_model(image_base64: str, model: str, client: httpx.AsyncClient) -> dict:
+# Resize base64 image so it fits within OpenRouter's limit (~1MB decoded)
+def _shrink_image(image_base64: str, max_bytes: int = 900_000) -> str:
+    raw = _b64.b64decode(image_base64)
+    if len(raw) <= max_bytes:
+        return image_base64
+    try:
+        from PIL import Image
+        import io
+        img = Image.open(io.BytesIO(raw))
+        # Downscale until under limit
+        quality = 75
+        scale = 1.0
+        while True:
+            w = int(img.width * scale)
+            h = int(img.height * scale)
+            resized = img.resize((max(w, 64), max(h, 64)), Image.LANCZOS)
+            buf = io.BytesIO()
+            resized.save(buf, format="JPEG", quality=quality)
+            if buf.tell() <= max_bytes or quality <= 40:
+                break
+            quality -= 10
+            if quality <= 40 and scale > 0.4:
+                scale -= 0.15
+                quality = 65
+        return _b64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        # PIL not available — truncate by re-encoding at lower quality not possible, return original
+        return image_base64
+
+async def _call_one_model(image_base64: str, model: str, client: httpx.AsyncClient, prompt: str = VISION_PROMPT) -> dict:
     payload = {
         "model": model,
-        "max_tokens": 1024,
+        "max_tokens": 2048,
         "temperature": 0.1,
         "messages": [
             {
@@ -134,7 +302,7 @@ async def _call_one_model(image_base64: str, model: str, client: httpx.AsyncClie
                         "type": "image_url",
                         "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
                     },
-                    {"type": "text", "text": VISION_PROMPT},
+                    {"type": "text", "text": prompt},
                 ],
             }
         ],
@@ -161,8 +329,9 @@ async def _call_one_model(image_base64: str, model: str, client: httpx.AsyncClie
     return json.loads(text)
 
 
-async def call_vision_ai(image_base64: str, preferred_model: str = "") -> tuple[dict, str]:
+async def call_vision_ai(image_base64: str, preferred_model: str = "", text_only: bool = False) -> tuple[dict, str]:
     """Try preferred model first, then fallback list on 429 / rate-limit. Returns (result, model_used)."""
+    prompt = TEXT_ONLY_PROMPT if text_only else VISION_PROMPT
     order = list(VISION_MODELS)
     if preferred_model and preferred_model in order:
         order.remove(preferred_model)
@@ -170,15 +339,19 @@ async def call_vision_ai(image_base64: str, preferred_model: str = "") -> tuple[
     elif preferred_model:
         order.insert(0, preferred_model)
 
+    # Shrink image if too large for OpenRouter (~1MB decoded limit)
+    image_base64 = _shrink_image(image_base64)
+
     last_error: Exception | None = None
     async with httpx.AsyncClient(timeout=60.0) as client:
         for model in order:
             try:
-                result = await _call_one_model(image_base64, model, client)
+                result = await _call_one_model(image_base64, model, client, prompt)
                 return result, model
             except httpx.HTTPStatusError as e:
-                if e.response.status_code in (404, 429, 500, 502, 503):
-                    last_error = e
+                if e.response.status_code in (400, 404, 429, 500, 502, 503):
+                    body = e.response.text[:300]
+                    last_error = ValueError(f"{model} HTTP {e.response.status_code}: {body}")
                     continue  # try next model
                 raise
             except (json.JSONDecodeError, KeyError):
@@ -259,6 +432,43 @@ async def upsert_dataset_image(
             return rows[0] if rows else record
 
 
+async def _fetch_and_prepare_image(request: AnalyzeFrameRequest) -> str:
+    """Resolve image_base64: fetch from URL server-side if needed, then apply crop."""
+    if request.image_url and not request.image_base64:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(request.image_url)
+            resp.raise_for_status()
+            raw = resp.content
+        b64 = _b64.b64encode(raw).decode()
+    else:
+        b64 = request.image_base64
+
+    # Apply crop if provided
+    if request.crop:
+        try:
+            from PIL import Image
+            import io
+            cx = float(request.crop.get("x", 0))
+            cy = float(request.crop.get("y", 0))
+            cw = float(request.crop.get("width", 100))
+            ch = float(request.crop.get("height", 100))
+            raw_bytes = _b64.b64decode(b64)
+            img = Image.open(io.BytesIO(raw_bytes))
+            iw, ih = img.size
+            left   = int(iw * cx / 100)
+            top    = int(ih * cy / 100)
+            right  = int(iw * (cx + cw) / 100)
+            bottom = int(ih * (cy + ch) / 100)
+            cropped = img.crop((left, top, right, bottom))
+            buf = io.BytesIO()
+            cropped.save(buf, format="JPEG", quality=90)
+            b64 = _b64.b64encode(buf.getvalue()).decode()
+        except Exception:
+            pass  # skip crop on error, use full image
+
+    return b64
+
+
 @app.post("/api/analyze_frame")
 async def analyze_frame(
     request: AnalyzeFrameRequest,
@@ -269,11 +479,17 @@ async def analyze_frame(
     token = authorization.split(" ", 1)[1]
     await verify_jwt(token)
 
+    # Resolve image (fetch from URL if needed, apply crop)
+    try:
+        image_b64 = await _fetch_and_prepare_image(request)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot load image: {e}")
+
     # Call vision AI (OpenRouter) with auto-fallback
     model_used = request.preferred_model or VISION_MODELS[0]
     parse_error_detail = None
     try:
-        ai_result, model_used = await call_vision_ai(request.image_base64, request.preferred_model)
+        ai_result, model_used = await call_vision_ai(image_b64, request.preferred_model, request.text_only)
     except HTTPException:
         raise
     except Exception as e:
@@ -301,12 +517,12 @@ async def analyze_frame(
 
     label_text = list(ai_result.get("label_text") or [])
     label_text.extend(request.client_label_text)
-    ai_result["label_text"] = label_text[:5]  # cap to avoid huge payloads
+    ai_result["label_text"] = label_text[:100]  # higher cap for text_only mode
 
-    # Upload frame to Supabase Storage
+    # Upload frame to Supabase Storage (use resolved image_b64, not raw request which may be empty for URL re-analyze)
     try:
         public_url = await upload_to_supabase_storage(
-            request.image_base64, request.video_id, request.filename
+            image_b64, request.video_id, request.filename
         )
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"Storage upload error: {e.response.text}")
