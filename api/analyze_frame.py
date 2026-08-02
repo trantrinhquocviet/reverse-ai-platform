@@ -210,32 +210,53 @@ async def upsert_dataset_image(
     video_id: str, file_path: str, image_name: str,
     ai_result: dict, frame_timestamp: float,
 ) -> dict:
-    record = {
-        "id": str(uuid.uuid4()),
-        "video_id": video_id,
-        "file_path": file_path,
-        "image_name": image_name,
-        "frame_timestamp": frame_timestamp,
-        "ai_result": ai_result,
-        "split_type": "train",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Content-Type": "application/json",
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
+        # Check if record already exists by image_name (unique per video processing run)
+        check = await client.get(
             f"{SUPABASE_URL}/rest/v1/dataset_images",
-            headers={
-                "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-                "apikey": SUPABASE_SERVICE_ROLE_KEY,
-                "Content-Type": "application/json",
-                # Upsert on (video_id, frame_timestamp) — reprocessing same video won't duplicate
-                "Prefer": "resolution=merge-duplicates,return=representation",
-            },
-            params={"on_conflict": "video_id,frame_timestamp"},
-            json=record,
+            headers={**headers, "Prefer": "return=representation"},
+            params={"video_id": f"eq.{video_id}", "image_name": f"eq.{image_name}", "select": "id"},
         )
-        resp.raise_for_status()
-        rows = resp.json()
-        return rows[0] if rows else record
+        existing = check.json() if check.status_code == 200 else []
+
+        if existing:
+            # Update existing record
+            row_id = existing[0]["id"]
+            patch = {"ai_result": ai_result, "file_path": file_path}
+            resp = await client.patch(
+                f"{SUPABASE_URL}/rest/v1/dataset_images",
+                headers={**headers, "Prefer": "return=representation"},
+                params={"id": f"eq.{row_id}"},
+                json=patch,
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return rows[0] if rows else {**patch, "id": row_id}
+        else:
+            # Insert new record
+            record = {
+                "id": str(uuid.uuid4()),
+                "video_id": video_id,
+                "file_path": file_path,
+                "image_name": image_name,
+                "frame_timestamp": frame_timestamp,
+                "ai_result": ai_result,
+                "split_type": "train",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            resp = await client.post(
+                f"{SUPABASE_URL}/rest/v1/dataset_images",
+                headers={**headers, "Prefer": "return=representation"},
+                json=record,
+            )
+            resp.raise_for_status()
+            rows = resp.json()
+            return rows[0] if rows else record
 
 
 @app.post("/api/analyze_frame")
