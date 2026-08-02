@@ -430,8 +430,8 @@ export function MiniAITrainer() {
       const thumb = (() => {
         try {
           const c = document.createElement('canvas')
-          const scale = 64 / img.naturalWidth
-          c.width = 64; c.height = Math.round(img.naturalHeight * scale)
+          const scale = 320 / img.naturalWidth
+          c.width = 320; c.height = Math.round(img.naturalHeight * scale)
           c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height)
           return c.toDataURL('image/jpeg', 0.5)
         } catch { return '' }

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { Upload, Search, Trash2, Video, LayoutGrid, List, Filter, Link2, CheckCircle2, AlertCircle, X as XIcon, Cpu, CheckSquare, Square, Loader2 } from 'lucide-react'
+import { Upload, Search, Trash2, Video, LayoutGrid, List, Filter, Link2, CheckCircle2, AlertCircle, X as XIcon, Cpu, CheckSquare, Square, Loader2, FileText, ClipboardList } from 'lucide-react'
 import { useVideos, useDeleteVideo, useFilterOptions, useUploadVideo, useImportVideoFromUrl } from '@/hooks/useVideos'
 import { Button } from '@/components/Button'
 import { Input, Select } from '@/components/Input'
@@ -609,13 +609,57 @@ function ImportUrlTab({ warehouses, brands, onClose }: { warehouses: string[]; b
   const [addToProcessing, setAddToProcessing] = useState(true)
   const queryClient = useQueryClient()
   const { addToQueue } = useProcessing()
+  const templateInputRef = { current: null as HTMLInputElement | null }
 
   const isValidUrl = (v: string) => { try { new URL(v); return true } catch { return false } }
 
-  const addRow = () => setUrlItems(prev => [...prev, { url: '', name: '', progress: 0, stage: 'downloading', status: 'pending' }])
+  const makeRow = (url = '', name = ''): UrlItem => ({ url, name, progress: 0, stage: 'downloading', status: 'pending' })
+  const addRow = () => setUrlItems(prev => [...prev, makeRow()])
   const removeRow = (i: number) => setUrlItems(prev => prev.filter((_, idx) => idx !== i))
   const updateRow = (i: number, patch: Partial<UrlItem>) =>
     setUrlItems(prev => prev.map((item, idx) => idx === i ? { ...item, ...patch } : item))
+
+  // Parse multiline text → URL rows (url [TAB|,] name)
+  const parseUrlText = (text: string): UrlItem[] => {
+    return text.split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => {
+        const sep = line.includes('\t') ? '\t' : ','
+        const [url, name = ''] = line.split(sep).map(s => s.trim())
+        return makeRow(url, name)
+      })
+      .filter(r => isValidUrl(r.url))
+  }
+
+  // Paste handler — if pasting multiple lines into a URL field, expand to rows
+  const handlePaste = (e: React.ClipboardEvent, rowIndex: number) => {
+    const text = e.clipboardData.getData('text')
+    const lines = text.split('\n').filter(l => l.trim())
+    if (lines.length <= 1) return  // single URL, let browser handle normally
+    e.preventDefault()
+    const newRows = parseUrlText(text)
+    if (!newRows.length) return
+    setUrlItems(prev => {
+      const updated = [...prev]
+      updated.splice(rowIndex, 1, ...newRows)
+      return updated
+    })
+  }
+
+  // Load template file (.txt or .csv)
+  const handleTemplateFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => {
+      const text = ev.target?.result as string
+      const rows = parseUrlText(text)
+      if (rows.length > 0) setUrlItems(rows)
+    }
+    reader.readAsText(file)
+    e.target.value = ''  // reset so same file can be re-loaded
+  }
 
   const validItems = urlItems.filter(item => isValidUrl(item.url))
   const allDone = urlItems.length > 0 && urlItems.every(i => i.status === 'done' || !isValidUrl(i.url))
@@ -670,6 +714,7 @@ function ImportUrlTab({ warehouses, brands, onClose }: { warehouses: string[]; b
                 placeholder="https://example.com/video.mp4"
                 value={item.url}
                 onChange={e => updateRow(i, { url: e.target.value })}
+                onPaste={e => handlePaste(e, i)}
                 disabled={importing || item.status === 'done'}
                 className="flex-1 min-w-0 bg-transparent text-xs text-[#f0f0f5] placeholder-[#55556a] outline-none disabled:opacity-60"
               />
@@ -700,14 +745,36 @@ function ImportUrlTab({ warehouses, brands, onClose }: { warehouses: string[]; b
         ))}
       </div>
 
-      {/* Add row button */}
+      {/* Add row + import template */}
       {!importing && (
-        <button
-          onClick={addRow}
-          className="w-full flex items-center justify-center gap-1.5 py-2 border border-dashed border-[#2a2a38] rounded-[8px] text-xs text-[#55556a] hover:text-[#8888a8] hover:border-[#3a3a4e] transition-colors"
-        >
-          + Thêm URL
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={addRow}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2 border border-dashed border-[#2a2a38] rounded-[8px] text-xs text-[#55556a] hover:text-[#8888a8] hover:border-[#3a3a4e] transition-colors"
+          >
+            + Thêm URL
+          </button>
+          <input
+            ref={el => { templateInputRef.current = el }}
+            type="file"
+            accept=".txt,.csv"
+            className="hidden"
+            onChange={handleTemplateFile}
+          />
+          <button
+            onClick={() => templateInputRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-2 border border-dashed border-[#2a2a38] rounded-[8px] text-xs text-[#55556a] hover:text-[#a89bff] hover:border-[#7c6af740] transition-colors"
+            title="Import từ file .txt hoặc .csv (mỗi dòng: URL hoặc URL,tên)"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Template
+          </button>
+        </div>
+      )}
+      {urlItems.length === 0 && !importing && (
+        <p className="text-[10px] text-[#44445a] text-center">
+          Template format: mỗi dòng <code className="text-[#7c6af7]">URL</code> hoặc <code className="text-[#7c6af7]">URL,tên video</code>
+        </p>
       )}
 
       <div className="grid grid-cols-2 gap-3">
