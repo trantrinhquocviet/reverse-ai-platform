@@ -53,6 +53,7 @@ interface ProcessingContextValue {
   removeFromQueue: (videoId: string) => void
   clearQueue: () => void
   startProcessing: (videoId: string, videoName: string, videoEl: HTMLVideoElement) => Promise<void>
+  cancelJob: () => void
   clearJob: () => void
 }
 
@@ -83,6 +84,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     } catch { return [] }
   })
   const processingRef = useRef(false)
+  const cancelRef = useRef(false)
   const hiddenVideoRef = useRef<HTMLVideoElement | null>(null)
   const zxingRef = useRef<BrowserMultiFormatReader | null>(null)
 
@@ -243,7 +245,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
     // Sample every 2s starting at 3s offset
     const SAMPLE_INTERVAL = 2
-    const OFFSET = 3
+    const OFFSET = 0
     const MOTION_THRESHOLD = 0.04   // 4% pixels changed → consider it motion
     const EDGE_THRESHOLD = 0.04     // 4% edge pixels — lowered to keep more frames with labels/hands
 
@@ -257,6 +259,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     let prevThumb: HTMLCanvasElement | null = null
     let kept = 0
 
+    cancelRef.current = false
     setJob({
       videoId, videoName,
       current: 0, total: candidates.length,
@@ -268,6 +271,8 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     let tokenFetchedAt = Date.now()
 
     for (let i = 0; i < candidates.length; i++) {
+      if (cancelRef.current) break
+
       const ts = candidates[i]
 
       // Refresh token every 45 minutes to avoid expiry on long videos
@@ -332,13 +337,18 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     }
 
     const ok = results.filter(r => r.status === 'ok').length
-    await supabase.from('videos').update({ status: ok > 0 ? 'ready' : 'failed' }).eq('id', videoId)
+    const wasCancelled = cancelRef.current
+    cancelRef.current = false
+    await supabase.from('videos').update({ status: ok > 0 ? 'ready' : wasCancelled ? 'pending' : 'failed' }).eq('id', videoId)
     setJob(prev => prev ? {
       ...prev, status: 'done',
-      message: `Done! ${kept}/${candidates.length} frames kept → ${ok} analyzed`,
+      message: wasCancelled
+        ? `Cancelled — ${ok} frames saved so far`
+        : `Done! ${kept}/${candidates.length} frames kept → ${ok} analyzed`,
     } : null)
   }, [])
 
+  const cancelJob = useCallback(() => { cancelRef.current = true }, [])
   const clearJob = useCallback(() => setJob(null), [])
 
   const setQueuePersisted = useCallback((updater: (prev: QueuedVideo[]) => QueuedVideo[]) => {
@@ -386,7 +396,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   }, [queue, job, startProcessing])
 
   return (
-    <ProcessingContext.Provider value={{ job, queue, preferredModel, setPreferredModel, addToQueue, removeFromQueue, clearQueue, startProcessing, clearJob }}>
+    <ProcessingContext.Provider value={{ job, queue, preferredModel, setPreferredModel, addToQueue, removeFromQueue, clearQueue, startProcessing, cancelJob, clearJob }}>
       {/* Hidden video element used for background queue processing */}
       <video ref={hiddenVideoRef} className="hidden" preload="metadata" crossOrigin="anonymous" />
       {children}

@@ -55,7 +55,7 @@ export function TopBar() {
   const location = useLocation()
   const navigate = useNavigate()
   const crumbs = getBreadcrumb(location.pathname)
-  const { job, queue, preferredModel, setPreferredModel, removeFromQueue, clearQueue } = useProcessing()
+  const { job, queue, preferredModel, setPreferredModel, removeFromQueue, clearQueue, cancelJob } = useProcessing()
 
   const [notifications, setNotifications] = useState<Notification[]>(mockNotifications)
   const [queueOpen, setQueueOpen] = useState(false)
@@ -180,9 +180,19 @@ export function TopBar() {
                   {/* Currently processing */}
                   {job?.status === 'running' && (
                     <div className="px-4 py-3">
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className="w-1.5 h-1.5 rounded-full bg-[#7c6af7] animate-pulse" />
-                        <span className="text-[10px] text-[#55556a] font-medium uppercase tracking-wider">Processing now</span>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <div className="w-1.5 h-1.5 rounded-full bg-[#7c6af7] animate-pulse" />
+                          <span className="text-[10px] text-[#55556a] font-medium uppercase tracking-wider">Processing now</span>
+                        </div>
+                        <button
+                          onClick={() => cancelJob()}
+                          className="flex items-center gap-1 text-[10px] text-[#55556a] hover:text-[#f87171] transition-colors px-2 py-0.5 rounded-[4px] hover:bg-[#f8717110]"
+                          title="Cancel processing"
+                        >
+                          <X className="w-3 h-3" />
+                          Cancel
+                        </button>
                       </div>
                       <div
                         className="flex items-center gap-3 cursor-pointer group"
