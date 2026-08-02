@@ -65,13 +65,21 @@ export const api = {
   videos: {
     getAll: async (filters?: { search?: string; status?: string; warehouse?: string; brand?: string }) => {
       let q = supabase.from('videos').select('*').order('created_at', { ascending: false })
-      if (filters?.search) q = q.ilike('name', `%${filters.search}%`)
       if (filters?.status && filters.status !== 'all') q = q.eq('status', filters.status.toLowerCase())
       if (filters?.warehouse && filters.warehouse !== 'all') q = q.eq('warehouse', filters.warehouse)
       if (filters?.brand && filters.brand !== 'all') q = q.eq('brand', filters.brand)
       const { data, error } = await q
       if (error) throw new Error(error.message)
-      return (data ?? []).map(mapVideo)
+      let results = (data ?? []).map(mapVideo)
+      // Client-side search covers name + file_path (handles null name rows)
+      if (filters?.search) {
+        const q2 = filters.search.toLowerCase()
+        results = results.filter(v =>
+          v.name?.toLowerCase().includes(q2) ||
+          v.filePath?.toLowerCase().includes(q2)
+        )
+      }
+      return results
     },
 
     getById: async (id: string) => {
