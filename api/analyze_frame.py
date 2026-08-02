@@ -356,11 +356,14 @@ async def call_vision_ai(image_base64: str, preferred_model: str = "", text_only
     image_base64 = _shrink_image(image_base64)
 
     last_error: Exception | None = None
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=90.0) as client:
         for model in order:
             try:
                 result = await _call_one_model(image_base64, model, client, prompt)
                 return result, model
+            except httpx.TimeoutException:
+                last_error = ValueError(f"{model}: timeout")
+                continue  # try next model on timeout
             except httpx.HTTPStatusError as e:
                 if e.response.status_code in (400, 404, 429, 500, 502, 503):
                     body = e.response.text[:300]

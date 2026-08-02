@@ -26,6 +26,64 @@ interface AIResult {
   label_text?: string[]
   confidence?: number
   notes?: string
+  checkpoint_product_correct?:  boolean | null
+  checkpoint_film_wrapped?:     boolean | null
+  checkpoint_awb_attached?:     boolean | null
+  checkpoint_barcode_readable?: boolean | null
+}
+
+interface Checkpoints {
+  productCorrect:  boolean | null
+  filmWrapped:     boolean | null
+  awbAttached:     boolean | null
+  barcodeReadable: boolean | null
+}
+
+function extractCheckpoints(ai: AIResult | null): Checkpoints {
+  return {
+    productCorrect:  ai?.checkpoint_product_correct  ?? null,
+    filmWrapped:     ai?.checkpoint_film_wrapped      ?? null,
+    awbAttached:     ai?.checkpoint_awb_attached      ?? null,
+    barcodeReadable: ai?.checkpoint_barcode_readable  ?? null,
+  }
+}
+
+const CP_META = [
+  { key: 'productCorrect',  label: 'Đúng SP',  icon: '📦' },
+  { key: 'filmWrapped',     label: 'Quấn kéo', icon: '🎁' },
+  { key: 'awbAttached',     label: 'Dán AWB',  icon: '🏷️' },
+  { key: 'barcodeReadable', label: 'Mã rõ',    icon: '📊' },
+] as const
+
+function CheckpointBadges({ checkpoints }: { checkpoints: Checkpoints }) {
+  const vals = [
+    checkpoints.productCorrect,
+    checkpoints.filmWrapped,
+    checkpoints.awbAttached,
+    checkpoints.barcodeReadable,
+  ]
+  if (vals.every(v => v === null)) return null
+  return (
+    <div className="flex gap-1 flex-wrap">
+      {CP_META.map((cp, i) => {
+        const val = vals[i]
+        return (
+          <span
+            key={cp.key}
+            title={cp.label}
+            className={cn(
+              'inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-[4px] text-[9px] font-semibold border',
+              val === true  && 'bg-[#16a34a20] text-[#4ade80] border-[#16a34a40]',
+              val === false && 'bg-[#dc262620] text-[#f87171] border-[#dc262640]',
+              val === null  && 'bg-[#1e1e2a] text-[#44445a] border-[#2a2a3a]',
+            )}
+          >
+            {cp.icon} {val === true ? '✓' : val === false ? '✗' : '–'}
+          </span>
+        )
+      })}
+    </div>
+  )
 }
 
 const LABEL_PALETTE = [
@@ -47,7 +105,8 @@ const OBJECT_EMOJI: Record<string, string> = {
   cardboard_box: '📦', shipping_label: '🏷️', barcode_1d: '📊', qr_code: '🔲',
   hand: '✋', tape_roll: '🧵', barcode_scanner: '📠', label_printer: '🖨️',
   knife_cutter: '🔪', keyboard: '⌨️', mouse: '🖱️', plastic_bag: '🟢',
-  envelope: '✉️', package: '📦',
+  envelope: '✉️', package: '📦', stretch_film: '🎁', bubble_wrap: '🫧',
+  awb_label: '🏷️', product_item: '🛍️', sku_label: '🔖', package_surface: '📦',
 }
 
 interface DatasetFrame {
@@ -260,9 +319,13 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
   const [editBarcodes, setEditBarcodes] = useState((frame.ai_result?.barcodes ?? []).join('\n'))
   const [localAi, setLocalAi] = useState(frame.ai_result)
   const [reanalyzing, setReanalyzing] = useState(false)
+  const [editCheckpoints, setEditCheckpoints] = useState<Checkpoints>(() => extractCheckpoints(frame.ai_result))
 
   // Sync when AI result updates after re-analyze refetch
-  useEffect(() => { setLocalAi(frame.ai_result) }, [frame.ai_result])
+  useEffect(() => {
+    setLocalAi(frame.ai_result)
+    setEditCheckpoints(extractCheckpoints(frame.ai_result))
+  }, [frame.ai_result])
   const [reanalyzeErr, setReanalyzeErr] = useState<string | null>(null)
 
   const handleReanalyze = useCallback(async () => {
@@ -298,13 +361,17 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
         ...localAi,
         tracking_codes: editTracking.split('\n').map(s => s.trim()).filter(Boolean),
         barcodes: editBarcodes.split('\n').map(s => s.trim()).filter(Boolean),
+        checkpoint_product_correct:  editCheckpoints.productCorrect,
+        checkpoint_film_wrapped:     editCheckpoints.filmWrapped,
+        checkpoint_awb_attached:     editCheckpoints.awbAttached,
+        checkpoint_barcode_readable: editCheckpoints.barcodeReadable,
       }
       const { error } = await supabase.from('dataset_images').update({ ai_result: updated }).eq('id', frame.id)
       if (error) throw new Error(error.message)
       return updated
     },
     onSuccess: (updated) => {
-      setLocalAi(updated)
+      setLocalAi(updated as AIResult)
       setEditing(false)
       queryClient.invalidateQueries({ queryKey: ['annotation-frames'] })
     },
@@ -436,6 +503,38 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
                 placeholder="barcode value"
               />
             </div>
+            {/* Checkpoint override toggles */}
+            <div>
+              <p className="text-[9px] text-[#55556a] mb-1.5">Checkpoints QC</p>
+              <div className="space-y-1">
+                {CP_META.map(cp => {
+                  const val = editCheckpoints[cp.key]
+                  return (
+                    <div key={cp.key} className="flex items-center justify-between">
+                      <span className="text-[9px] text-[#8888a8]">{cp.icon} {cp.label}</span>
+                      <div className="flex gap-1">
+                        {([true, false, null] as const).map(v => (
+                          <button
+                            key={String(v)}
+                            onClick={() => setEditCheckpoints(prev => ({ ...prev, [cp.key]: v }))}
+                            className={cn(
+                              'px-1.5 py-0.5 rounded text-[9px] font-semibold border transition-colors',
+                              val === v
+                                ? v === true  ? 'bg-[#16a34a] text-white border-[#16a34a]'
+                                : v === false ? 'bg-[#dc2626] text-white border-[#dc2626]'
+                                :               'bg-[#55556a] text-white border-[#55556a]'
+                                : 'bg-transparent text-[#44445a] border-[#2a2a3a] hover:border-[#55556a]'
+                            )}
+                          >
+                            {v === true ? '✓' : v === false ? '✗' : '–'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
             <button
               onClick={() => saveEdit.mutate()}
               disabled={saveEdit.isPending}
@@ -447,6 +546,8 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
           </div>
         ) : (
           <>
+            {/* Checkpoint badges — view mode */}
+            <CheckpointBadges checkpoints={extractCheckpoints(localAi)} />
             {trackingCodes.length > 0 && (
               <div className="bg-[#1a1a24] rounded-[6px] p-2">
                 <p className="text-[9px] text-[#55556a] mb-1">Tracking Code</p>
@@ -627,6 +728,34 @@ export function AnnotationQueue() {
   const approved = frames.filter(f => f.review_status === 'approved').length
   const rejected = frames.filter(f => f.review_status === 'rejected').length
 
+  // Checkpoint stats across all loaded frames
+  const cpStats = CP_META.map(cp => {
+    const fieldMap: Record<string, keyof AIResult> = {
+      productCorrect:  'checkpoint_product_correct',
+      filmWrapped:     'checkpoint_film_wrapped',
+      awbAttached:     'checkpoint_awb_attached',
+      barcodeReadable: 'checkpoint_barcode_readable',
+    }
+    const field = fieldMap[cp.key]
+    const withData = frames.filter(f => f.ai_result?.[field] !== null && f.ai_result?.[field] !== undefined)
+    const passed   = frames.filter(f => f.ai_result?.[field] === true).length
+    const failed   = frames.filter(f => f.ai_result?.[field] === false).length
+    return { ...cp, passed, failed, total: withData.length }
+  })
+
+  // CP Failures filter applied client-side
+  const displayFrames = filterStatus === 'cp_failures'
+    ? frames.filter(f => {
+        const ai = f.ai_result
+        return [
+          ai?.checkpoint_product_correct,
+          ai?.checkpoint_film_wrapped,
+          ai?.checkpoint_awb_attached,
+          ai?.checkpoint_barcode_readable,
+        ].some(v => v === false)
+      })
+    : frames
+
   return (
     <div className="p-6 space-y-5">
       {/* Header */}
@@ -675,6 +804,37 @@ export function AnnotationQueue() {
             </div>
           ))}
         </div>
+
+        {/* Checkpoint QC stats strip */}
+        {cpStats.some(c => c.total > 0) && (
+          <div className="grid grid-cols-4 gap-2">
+            {cpStats.map(cp => {
+              const passRate = cp.total > 0 ? Math.round(cp.passed / cp.total * 100) : null
+              return (
+                <div key={cp.key} className={cn(
+                  'rounded-[8px] p-2 text-center border',
+                  passRate === null ? 'bg-[#1a1a24] border-[#1e1e2a]' :
+                  passRate >= 90 ? 'bg-[#16a34a10] border-[#16a34a30]' :
+                  passRate >= 70 ? 'bg-[#f59e0b10] border-[#f59e0b30]' :
+                                   'bg-[#dc262610] border-[#dc262630]'
+                )}>
+                  <p className="text-sm">{cp.icon}</p>
+                  <p className={cn('text-sm font-bold',
+                    passRate === null ? 'text-[#44445a]' :
+                    passRate >= 90 ? 'text-[#4ade80]' :
+                    passRate >= 70 ? 'text-[#fbbf24]' : 'text-[#f87171]'
+                  )}>
+                    {passRate !== null ? `${passRate}%` : '–'}
+                  </p>
+                  <p className="text-[8px] text-[#55556a]">{cp.label}</p>
+                  {cp.failed > 0 && (
+                    <p className="text-[8px] text-[#f87171]">{cp.failed} fail</p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
       )}
 
       {/* Filters */}
@@ -695,6 +855,17 @@ export function AnnotationQueue() {
               {s}
             </button>
           ))}
+          <button
+            onClick={() => setFilterStatus('cp_failures')}
+            className={cn(
+              'px-3 py-1.5 rounded-[6px] text-xs font-medium transition-colors',
+              filterStatus === 'cp_failures'
+                ? 'bg-[#dc2626] text-white'
+                : 'bg-[#dc262615] text-[#f87171] hover:bg-[#dc262625]'
+            )}
+          >
+            ✗ CP Failures
+          </button>
         </div>
 
         {/* Video filter */}
@@ -746,7 +917,7 @@ export function AnnotationQueue() {
       {frames.length > 0 && (
         <div className="flex items-center gap-3">
           <button
-            onClick={() => handleSelectAll(frames)}
+            onClick={() => handleSelectAll(displayFrames)}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-[6px] bg-[#1a1a24] text-[#8888a8] hover:text-[#f0f0f5] text-xs transition-colors"
           >
             {selectedIds.size === frames.length
@@ -775,10 +946,12 @@ export function AnnotationQueue() {
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-6 h-6 text-[#7c6af7] animate-spin" />
         </div>
-      ) : frames.length === 0 ? (
+      ) : displayFrames.length === 0 ? (
         <div className="text-center py-16 space-y-2">
           <p className="text-[#55556a] text-sm">
-            {filterStatus === 'all' && filterVideo === 'all'
+            {filterStatus === 'cp_failures'
+              ? 'Không có frame nào bị fail checkpoint QC'
+              : filterStatus === 'all' && filterVideo === 'all'
               ? 'Chưa có frames nào — chạy AI Processing trên video trước'
               : filterVideo !== 'all'
               ? `Không có frame nào ${filterStatus !== 'all' ? `ở trạng thái "${filterStatus}"` : ''} cho video này`
@@ -787,7 +960,7 @@ export function AnnotationQueue() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {frames.map(frame => (
+          {displayFrames.map(frame => (
             <FrameCard
               key={frame.id}
               frame={frame}

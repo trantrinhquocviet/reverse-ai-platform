@@ -1,7 +1,12 @@
 {
   "buildCommand": "cd reverse-ai-studio && npm install && npm run build",
   "outputDirectory": "reverse-ai-studio/dist",
+  "functions": {
+    "api/analyze_frame.py": { "maxDuration": 120 },
+    "api/index.py": { "maxDuration": 120 }
+  },
   "rewrites": [
+    { "source": "/api/analyze_frame", "destination": "/api/analyze_frame" },
     { "source": "/api/v1/:path*", "destination": "/api/index" },
     { "source": "/health", "destination": "/api/index" },
     { "source": "/docs", "destination": "/api/index" },
