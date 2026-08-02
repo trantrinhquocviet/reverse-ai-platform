@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 
-const AUTO_TRAIN_ENABLED_KEY   = 'auto_train_enabled'
-const AUTO_TRAIN_THRESHOLD_KEY = 'auto_train_threshold'
-const AUTO_TRAIN_COUNT_KEY     = 'auto_train_approved_count'
-const AUTO_TRAIN_NOTIFIED_KEY  = 'auto_train_notified'
+const AUTO_TRAIN_ENABLED_KEY      = 'auto_train_enabled'
+const AUTO_TRAIN_THRESHOLD_KEY    = 'auto_train_threshold'
+const AUTO_TRAIN_COUNT_KEY        = 'auto_train_approved_count'
+const AUTO_TRAIN_NOTIFIED_KEY     = 'auto_train_notified'
+const AUTO_TRAIN_LAST_TRAINED_KEY = 'auto_train_last_trained_at'
 
 function readBool(key: string, fallback: boolean): boolean {
   const v = localStorage.getItem(key)
@@ -19,18 +20,20 @@ function readNum(key: string, fallback: number): number {
 }
 
 export function useAutoTrain() {
-  const [enabled, setEnabledState]     = useState<boolean>(() => readBool(AUTO_TRAIN_ENABLED_KEY, false))
-  const [threshold, setThresholdState] = useState<number>(() => readNum(AUTO_TRAIN_THRESHOLD_KEY, 20))
-  const [count, setCountState]         = useState<number>(() => readNum(AUTO_TRAIN_COUNT_KEY, 0))
-  const [notified, setNotifiedState]   = useState<boolean>(() => readBool(AUTO_TRAIN_NOTIFIED_KEY, false))
+  const [enabled, setEnabledState]         = useState<boolean>(() => readBool(AUTO_TRAIN_ENABLED_KEY, false))
+  const [threshold, setThresholdState]     = useState<number>(() => readNum(AUTO_TRAIN_THRESHOLD_KEY, 20))
+  const [count, setCountState]             = useState<number>(() => readNum(AUTO_TRAIN_COUNT_KEY, 0))
+  const [notified, setNotifiedState]       = useState<boolean>(() => readBool(AUTO_TRAIN_NOTIFIED_KEY, false))
+  const [lastTrainedAt, setLastTrainedState] = useState<string>(() => localStorage.getItem(AUTO_TRAIN_LAST_TRAINED_KEY) ?? '')
 
   // Sync state from localStorage when another tab writes (storage event)
   useEffect(() => {
     function onStorage(e: StorageEvent) {
-      if (e.key === AUTO_TRAIN_ENABLED_KEY)   setEnabledState(readBool(AUTO_TRAIN_ENABLED_KEY, false))
-      if (e.key === AUTO_TRAIN_THRESHOLD_KEY) setThresholdState(readNum(AUTO_TRAIN_THRESHOLD_KEY, 20))
-      if (e.key === AUTO_TRAIN_COUNT_KEY)     setCountState(readNum(AUTO_TRAIN_COUNT_KEY, 0))
-      if (e.key === AUTO_TRAIN_NOTIFIED_KEY)  setNotifiedState(readBool(AUTO_TRAIN_NOTIFIED_KEY, false))
+      if (e.key === AUTO_TRAIN_ENABLED_KEY)       setEnabledState(readBool(AUTO_TRAIN_ENABLED_KEY, false))
+      if (e.key === AUTO_TRAIN_THRESHOLD_KEY)   setThresholdState(readNum(AUTO_TRAIN_THRESHOLD_KEY, 20))
+      if (e.key === AUTO_TRAIN_COUNT_KEY)       setCountState(readNum(AUTO_TRAIN_COUNT_KEY, 0))
+      if (e.key === AUTO_TRAIN_NOTIFIED_KEY)    setNotifiedState(readBool(AUTO_TRAIN_NOTIFIED_KEY, false))
+      if (e.key === AUTO_TRAIN_LAST_TRAINED_KEY) setLastTrainedState(localStorage.getItem(AUTO_TRAIN_LAST_TRAINED_KEY) ?? '')
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)
@@ -75,6 +78,26 @@ export function useAutoTrain() {
     setNotifiedState(false)
   }, [])
 
+  const setLastTrainedAt = useCallback((iso: string) => {
+    localStorage.setItem(AUTO_TRAIN_LAST_TRAINED_KEY, iso)
+    setLastTrainedState(iso)
+  }, [])
+
+  // Override count from DB (called by MiniAITrainer after querying Supabase)
+  const setDbCount = useCallback((n: number) => {
+    localStorage.setItem(AUTO_TRAIN_COUNT_KEY, String(n))
+    setCountState(n)
+    const thr = readNum(AUTO_TRAIN_THRESHOLD_KEY, 20)
+    if (n >= thr) {
+      localStorage.setItem(AUTO_TRAIN_NOTIFIED_KEY, 'true')
+      setNotifiedState(true)
+      const isEnabled = readBool(AUTO_TRAIN_ENABLED_KEY, false)
+      if (isEnabled) {
+        window.dispatchEvent(new CustomEvent('auto-train-trigger'))
+      }
+    }
+  }, [])
+
   const isReady = count >= threshold
 
   return {
@@ -85,6 +108,9 @@ export function useAutoTrain() {
     count,
     notified,
     isReady,
+    lastTrainedAt,
+    setLastTrainedAt,
+    setDbCount,
     incrementCount,
     resetCount,
   }

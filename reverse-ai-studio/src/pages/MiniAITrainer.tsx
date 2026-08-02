@@ -196,7 +196,25 @@ export function MiniAITrainer() {
   const canTrain = samples.length >= 6
 
   const { enabled: atEnabled, setEnabled: atSetEnabled, threshold: atThreshold, setThreshold: atSetThreshold,
-          count: atCount, isReady: atIsReady, resetCount: atResetCount } = useAutoTrain()
+          count: atCount, isReady: atIsReady, resetCount: atResetCount,
+          lastTrainedAt: atLastTrainedAt, setLastTrainedAt: atSetLastTrainedAt, setDbCount: atSetDbCount } = useAutoTrain()
+
+  // Poll Supabase every 60s for real approved-since-last-train count
+  useEffect(() => {
+    let cancelled = false
+    async function refresh() {
+      try {
+        let q = supabase.from('annotations').select('id', { count: 'exact', head: true }).eq('status', 'approved')
+        if (atLastTrainedAt) q = q.gt('updated_at', atLastTrainedAt)
+        const { count } = await q
+        if (!cancelled && count !== null) atSetDbCount(count)
+      } catch { /* ignore */ }
+    }
+    refresh()
+    const id = setInterval(refresh, 60_000)
+    return () => { cancelled = true; clearInterval(id) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [atLastTrainedAt])
 
   // Full-auto: trigger training when event fired (user is on this page)
   useEffect(() => {
@@ -390,6 +408,8 @@ export function MiniAITrainer() {
       modelRef.current = { model, mobileNet }
       setPhase('done')
       setModelReady(true)
+      atSetLastTrainedAt(new Date().toISOString())
+      atResetCount()
       setProgress(p => ({ ...p, step: `v${versionNum} saved! 4 tasks learned.`, percent: 100 }))
     } catch (e) {
       setPhase('error')
@@ -744,47 +764,67 @@ export function MiniAITrainer() {
 
           {/* Auto-train settings */}
           <div className="rounded-[14px] bg-[#111118] border border-[#1e1e2a] p-4 space-y-3">
+            {/* Header row */}
             <div className="flex items-center gap-2">
-              <Zap className="w-4 h-4 text-[#55556a]" />
+              <Zap className={cn('w-4 h-4 transition-colors', atEnabled ? 'text-[#a89bff]' : 'text-[#44445a]')} />
               <h3 className="text-sm font-semibold text-[#f0f0f5]">Auto-Train</h3>
+              {/* Pill toggle */}
               <button
                 onClick={() => atSetEnabled(!atEnabled)}
+                role="switch"
+                aria-checked={atEnabled}
                 className={cn(
-                  'ml-auto w-9 h-5 rounded-full transition-colors relative',
-                  atEnabled ? 'bg-[#7c6af7]' : 'bg-[#2a2a3a]'
+                  'ml-auto flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold tracking-wide transition-all',
+                  atEnabled
+                    ? 'bg-[#7c6af7] text-white shadow-[0_0_10px_#7c6af740]'
+                    : 'bg-[#1e1e2a] text-[#55556a] hover:bg-[#2a2a3a] hover:text-[#8888a8]'
                 )}
               >
-                <span className={cn(
-                  'absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform',
-                  atEnabled ? 'translate-x-4' : 'translate-x-0.5'
-                )} />
+                <span className={cn('w-1.5 h-1.5 rounded-full transition-colors', atEnabled ? 'bg-white' : 'bg-[#44445a]')} />
+                {atEnabled ? 'ON' : 'OFF'}
               </button>
             </div>
+
+            {/* Threshold */}
             <div className="flex items-center justify-between text-xs">
               <span className="text-[#55556a]">Trigger sau mỗi</span>
               <select
                 value={atThreshold}
                 onChange={e => atSetThreshold(Number(e.target.value))}
-                className="bg-[#1e1e2a] text-[#f0f0f5] text-xs rounded-[6px] px-2 py-1 border border-[#2a2a3a]"
+                className="bg-[#1e1e2a] text-[#f0f0f5] text-xs rounded-[6px] px-2 py-1 border border-[#2a2a3a] focus:outline-none focus:border-[#a89bff]"
               >
                 {[10, 20, 30, 50].map(n => <option key={n} value={n}>{n} approvals</option>)}
               </select>
             </div>
+
             {/* Progress bar */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-[10px] text-[#44445a]">
-                <span>{atCount} / {atThreshold} approved</span>
-                <span>{Math.min(100, Math.round(atCount / atThreshold * 100))}%</span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#55556a]">
+                  {atCount} / {atThreshold} approved
+                  {atLastTrainedAt && (
+                    <span className="text-[#44445a] ml-1">
+                      (since {new Date(atLastTrainedAt).toLocaleDateString('vi-VN')})
+                    </span>
+                  )}
+                </span>
+                <span className={cn('font-medium', atIsReady ? 'text-[#a89bff]' : 'text-[#44445a]')}>
+                  {Math.min(100, Math.round(atCount / atThreshold * 100))}%
+                </span>
               </div>
-              <div className="h-1.5 rounded-full bg-[#1e1e2a] overflow-hidden">
+              <div className="h-2 rounded-full bg-[#1e1e2a] overflow-hidden">
                 <div
-                  className={cn('h-full rounded-full transition-all', atIsReady ? 'bg-[#7c6af7]' : 'bg-[#44445a]')}
+                  className={cn('h-full rounded-full transition-all duration-500',
+                    atIsReady ? 'bg-[#7c6af7] shadow-[0_0_6px_#7c6af780]' : 'bg-[#3a3a50]')}
                   style={{ width: `${Math.min(100, atCount / atThreshold * 100)}%` }}
                 />
               </div>
             </div>
-            <p className="text-[9px] text-[#44445a]">
-              {atEnabled ? 'Full-auto: train ngay khi đủ threshold (cần ở trang này)' : 'Semi-auto: hỏi trước khi train'}
+
+            <p className="text-[9px] text-[#44445a] leading-relaxed">
+              {atEnabled
+                ? 'Full-auto: train ngay khi đủ threshold (cần ở trang này). Đếm từ Supabase, refresh mỗi 60s.'
+                : 'Semi-auto: hiện banner để xác nhận trước khi train.'}
             </p>
           </div>
         </div>
