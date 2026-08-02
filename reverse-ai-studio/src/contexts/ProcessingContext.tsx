@@ -128,17 +128,23 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     return changed / total
   }
 
-  // ── Step 3: quick OCR at 400px — preprocessed for speed ──
-  const quickOcr = async (canvas: HTMLCanvasElement): Promise<string> => {
-    try {
-      const small = document.createElement('canvas')
-      small.width = 400
-      small.height = Math.round(400 * (canvas.height / canvas.width))
-      small.getContext('2d')!.drawImage(canvas, 0, 0, small.width, small.height)
-      const preprocessed = preprocessForOcr(small)
-      const { data } = await Tesseract.recognize(preprocessed, 'eng', { logger: () => {} })
-      return data.text.trim()
-    } catch { return '' }
+  // ── Step 3: edge density heuristic — fast substitute for quick OCR ──
+  // High edge pixel % suggests text/labels are present; avoids Tesseract on every frame
+  const hasEdgeDensity = (canvas: HTMLCanvasElement, threshold = 0.08): boolean => {
+    const small = document.createElement('canvas')
+    small.width = 160; small.height = Math.round(160 * (canvas.height / canvas.width))
+    const ctx = small.getContext('2d')!
+    ctx.drawImage(canvas, 0, 0, small.width, small.height)
+    const d = ctx.getImageData(0, 0, small.width, small.height).data
+    let edges = 0
+    const w = small.width * 4
+    for (let i = w; i < d.length - w; i += 4) {
+      const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+      const above = 0.299 * d[i - w] + 0.587 * d[i - w + 1] + 0.114 * d[i - w + 2]
+      const left  = 0.299 * d[i - 4] + 0.587 * d[i - 3] + 0.114 * d[i - 2]
+      if (Math.abs(gray - above) + Math.abs(gray - left) > 40) edges++
+    }
+    return edges / (small.width * small.height) > threshold
   }
 
   // ── Extract tracking codes from OCR text ──
@@ -181,6 +187,15 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     } catch { return { text: '', codes: [] } }
   }
 
+  const getToken = async (): Promise<string> => {
+    // Always refresh before use — access tokens expire in ~1h
+    const { data } = await supabase.auth.refreshSession()
+    if (data.session) return data.session.access_token
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) throw new Error('Not authenticated')
+    return session.access_token
+  }
+
   const startProcessing = useCallback(async (videoId: string, videoName: string, videoEl: HTMLVideoElement) => {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) return
@@ -200,7 +215,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     const SAMPLE_INTERVAL = 2
     const OFFSET = 3
     const MOTION_THRESHOLD = 0.04   // 4% pixels changed → consider it motion
-    const TEXT_MIN_LENGTH = 5       // min chars from quick OCR to proceed (lower after contrast boost)
+    const EDGE_THRESHOLD = 0.08     // 8% edge pixels → likely has text/labels
 
     const duration = videoEl.duration
     const candidates: number[] = []
@@ -219,8 +234,16 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
       message: 'Scanning frames...',
     })
 
+    let token = session.access_token
+    let tokenFetchedAt = Date.now()
+
     for (let i = 0; i < candidates.length; i++) {
       const ts = candidates[i]
+
+      // Refresh token every 45 minutes to avoid expiry on long videos
+      if (Date.now() - tokenFetchedAt > 45 * 60 * 1000) {
+        try { token = await getToken(); tokenFetchedAt = Date.now() } catch { /* keep old */ }
+      }
 
       setJob(prev => prev ? {
         ...prev, current: i + 1,
@@ -237,9 +260,8 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         }
         prevThumb = thumb
 
-        // ── Filter 2: quick OCR text density ──
-        const quickText = await quickOcr(canvas)
-        if (quickText.length < TEXT_MIN_LENGTH) continue  // no useful text, skip
+        // ── Filter 2: edge density (fast — no Tesseract) ──
+        if (!hasEdgeDensity(canvas, EDGE_THRESHOLD)) continue  // no labels/text visible, skip
 
         // ── Passed both filters → full analysis ──
         kept++
@@ -255,7 +277,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
         const res = await fetch('/api/analyze_frame', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({
             image_base64: base64, video_id: videoId, frame_timestamp: ts, filename,
             client_barcodes: clientBarcodes,
