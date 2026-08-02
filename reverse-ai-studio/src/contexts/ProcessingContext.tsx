@@ -9,6 +9,7 @@ export interface FrameResult {
   imageId?: string
   error?: string
   aiResult?: Record<string, unknown>
+  modelUsed?: string
 }
 
 export interface ProcessingJob {
@@ -27,9 +28,19 @@ export interface QueuedVideo {
   filePath: string
 }
 
+export const VISION_MODELS = [
+  { id: 'nvidia/nemotron-nano-12b-v2-vl:free',          label: 'Nemotron Nano 12B (NVIDIA)' },
+  { id: 'qwen/qwen2.5-vl-72b-instruct:free',            label: 'Qwen 2.5 VL 72B' },
+  { id: 'meta-llama/llama-4-scout:free',                label: 'Llama 4 Scout (Meta)' },
+  { id: 'google/gemma-3-27b-it:free',                   label: 'Gemma 3 27B (Google)' },
+  { id: 'mistralai/mistral-small-3.1-24b-instruct:free', label: 'Mistral Small 3.1 24B' },
+]
+
 interface ProcessingContextValue {
   job: ProcessingJob | null
   queue: QueuedVideo[]
+  preferredModel: string
+  setPreferredModel: (model: string) => void
   addToQueue: (videos: QueuedVideo[]) => void
   removeFromQueue: (videoId: string) => void
   clearQueue: () => void
@@ -49,6 +60,14 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   const QUEUE_KEY = 'processing_queue_v1'
 
   const [job, setJob] = useState<ProcessingJob | null>(null)
+  const [preferredModel, setPreferredModelState] = useState<string>(
+    () => localStorage.getItem('preferred_vision_model') ?? VISION_MODELS[0].id
+  )
+  const setPreferredModel = useCallback((model: string) => {
+    localStorage.setItem('preferred_vision_model', model)
+    setPreferredModelState(model)
+  }, [])
+
   const [queue, setQueue] = useState<QueuedVideo[]>(() => {
     try {
       const saved = localStorage.getItem(QUEUE_KEY)
@@ -283,6 +302,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
             client_barcodes: clientBarcodes,
             client_tracking_codes: ocrResult.codes,
             client_label_text: ocrResult.text ? [ocrResult.text] : [],
+            preferred_model: preferredModel,
           }),
         })
 
@@ -290,8 +310,8 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
           const err = await res.json().catch(() => ({})) as { detail?: string }
           results.push({ timestamp: ts, status: 'error', error: err.detail ?? `HTTP ${res.status}` })
         } else {
-          const data = await res.json() as { id: string; ai_result: Record<string, unknown> }
-          results.push({ timestamp: ts, status: 'ok', imageId: data.id, aiResult: data.ai_result })
+          const data = await res.json() as { id: string; ai_result: Record<string, unknown>; model_used?: string }
+          results.push({ timestamp: ts, status: 'ok', imageId: data.id, aiResult: data.ai_result, modelUsed: data.model_used })
         }
       } catch (e) {
         results.push({ timestamp: ts, status: 'error', error: e instanceof Error ? e.message : 'unknown' })
@@ -355,7 +375,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   }, [queue, job, startProcessing])
 
   return (
-    <ProcessingContext.Provider value={{ job, queue, addToQueue, removeFromQueue, clearQueue, startProcessing, clearJob }}>
+    <ProcessingContext.Provider value={{ job, queue, preferredModel, setPreferredModel, addToQueue, removeFromQueue, clearQueue, startProcessing, clearJob }}>
       {/* Hidden video element used for background queue processing */}
       <video ref={hiddenVideoRef} className="hidden" preload="metadata" crossOrigin="anonymous" />
       {children}

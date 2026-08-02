@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Search, CheckCheck, Cpu, AlertCircle, Eye, Download, Loader2, X, ChevronRight, ListVideo } from 'lucide-react'
+import { Bell, Search, CheckCheck, Cpu, AlertCircle, Eye, Download, Loader2, X, ChevronRight, ListVideo, Bot } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { mockNotifications } from '@/services/mockData'
-import { useProcessing } from '@/contexts/ProcessingContext'
+import { useProcessing, VISION_MODELS } from '@/contexts/ProcessingContext'
 import type { Notification, NotificationType } from '@/types'
 
 const breadcrumbMap: Record<string, string[]> = {
@@ -54,11 +54,21 @@ export function TopBar() {
   const location = useLocation()
   const navigate = useNavigate()
   const crumbs = getBreadcrumb(location.pathname)
-  const { job, queue, removeFromQueue, clearQueue } = useProcessing()
+  const { job, queue, preferredModel, setPreferredModel, removeFromQueue, clearQueue } = useProcessing()
 
   const [notifications, setNotifications] = useState<Notification[]>(mockNotifications)
   const [queueOpen, setQueueOpen] = useState(false)
+  const [modelOpen, setModelOpen] = useState(false)
   const queueRef = useRef<HTMLDivElement>(null)
+  const modelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (modelRef.current && !modelRef.current.contains(e.target as Node)) setModelOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -188,6 +198,9 @@ export function TopBar() {
                             </span>
                           </div>
                           <p className="text-[10px] text-[#55556a] mt-0.5 truncate">{job.message}</p>
+                          <p className="text-[9px] text-[#44445a] mt-0.5 truncate">
+                            Model: {VISION_MODELS.find(m => m.id === preferredModel)?.label ?? preferredModel}
+                          </p>
                         </div>
                         <ChevronRight className="w-3.5 h-3.5 text-[#55556a] group-hover:text-[#a89bff] transition-colors flex-shrink-0" />
                       </div>
@@ -226,6 +239,67 @@ export function TopBar() {
             )}
           </div>
         )}
+        {/* AI Model picker */}
+        <div ref={modelRef} className="relative">
+          <button
+            onClick={() => setModelOpen(v => !v)}
+            title="Switch AI model"
+            className={cn(
+              'flex items-center gap-1.5 px-2.5 py-1.5 rounded-[8px] border text-[10px] font-medium transition-colors',
+              modelOpen
+                ? 'bg-[#7c6af730] border-[#7c6af760] text-[#a89bff]'
+                : 'bg-[#ffffff08] border-transparent text-[#8888a8] hover:text-[#a89bff] hover:bg-[#7c6af720]'
+            )}
+          >
+            <Bot className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="max-w-[90px] truncate hidden sm:block">
+              {VISION_MODELS.find(m => m.id === preferredModel)?.label.split(' ')[0] ?? 'AI Model'}
+            </span>
+          </button>
+
+          {modelOpen && (
+            <div className="absolute right-0 top-full mt-2 w-72 bg-[#0d0d14] border border-[#1e1e2a] rounded-[12px] shadow-2xl z-50 overflow-hidden">
+              <div className="px-4 py-3 border-b border-[#1e1e2a]">
+                <p className="text-xs font-semibold text-[#f0f0f5]">Vision AI Model</p>
+                <p className="text-[10px] text-[#55556a] mt-0.5">Preferred model — auto-fallbacks if rate-limited</p>
+              </div>
+              <div className="p-2">
+                {VISION_MODELS.map((m, i) => (
+                  <button
+                    key={m.id}
+                    onClick={() => { setPreferredModel(m.id); setModelOpen(false) }}
+                    className={cn(
+                      'w-full flex items-center gap-3 px-3 py-2.5 rounded-[8px] text-left transition-colors',
+                      preferredModel === m.id
+                        ? 'bg-[#7c6af720] text-[#a89bff]'
+                        : 'hover:bg-[#ffffff06] text-[#8888a8]'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0',
+                      preferredModel === m.id ? 'bg-[#7c6af7] text-white' : 'bg-[#1e1e2a] text-[#55556a]'
+                    )}>
+                      {i + 1}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium truncate">{m.label}</p>
+                      <p className="text-[9px] text-[#44445a] truncate mt-0.5">{m.id}</p>
+                    </div>
+                    {preferredModel === m.id && (
+                      <div className="w-1.5 h-1.5 rounded-full bg-[#7c6af7] flex-shrink-0" />
+                    )}
+                  </button>
+                ))}
+              </div>
+              <div className="px-4 py-2.5 border-t border-[#1e1e2a]">
+                <p className="text-[10px] text-[#44445a]">
+                  Fallback order: 1 → 2 → 3 → 4 → 5 khi hết token
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
         <button className="p-2 rounded-[8px] text-[#55556a] hover:text-[#f0f0f5] hover:bg-[#ffffff08] transition-colors">
           <Search className="w-4 h-4" />
         </button>

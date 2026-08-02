@@ -24,7 +24,14 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
-OPENROUTER_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
+# Ordered fallback list — tried in sequence when rate-limited (429) or unavailable
+VISION_MODELS = [
+    "nvidia/nemotron-nano-12b-v2-vl:free",
+    "qwen/qwen2.5-vl-72b-instruct:free",
+    "meta-llama/llama-4-scout:free",
+    "google/gemma-3-27b-it:free",
+    "mistralai/mistral-small-3.1-24b-instruct:free",
+]
 
 VISION_PROMPT = """You are a warehouse AI inspector analyzing a packing/sorting video frame.
 
@@ -66,6 +73,7 @@ class AnalyzeFrameRequest(BaseModel):
     client_barcodes: list[str] = []
     client_tracking_codes: list[str] = []
     client_label_text: list[str] = []
+    preferred_model: str = ""  # empty = use default fallback order
 
 
 async def verify_jwt(token: str) -> dict:
@@ -82,9 +90,11 @@ async def verify_jwt(token: str) -> dict:
         return resp.json()
 
 
-async def call_vision_ai(image_base64: str) -> dict:
+import re as _re
+
+async def _call_one_model(image_base64: str, model: str, client: httpx.AsyncClient) -> dict:
     payload = {
-        "model": OPENROUTER_MODEL,
+        "model": model,
         "max_tokens": 1024,
         "temperature": 0.1,
         "messages": [
@@ -100,30 +110,53 @@ async def call_vision_ai(image_base64: str) -> dict:
             }
         ],
     }
+    resp = await client.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://reverse-ai-platform.vercel.app",
+            "X-Title": "Reverse AI Studio",
+        },
+        json=payload,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    text = data["choices"][0]["message"]["content"].strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(lines[1:-1]) if len(lines) > 2 else text
+    match = _re.search(r'\{[\s\S]*\}', text)
+    if match:
+        text = match.group(0)
+    return json.loads(text)
+
+
+async def call_vision_ai(image_base64: str, preferred_model: str = "") -> tuple[dict, str]:
+    """Try preferred model first, then fallback list on 429 / rate-limit. Returns (result, model_used)."""
+    order = list(VISION_MODELS)
+    if preferred_model and preferred_model in order:
+        order.remove(preferred_model)
+        order.insert(0, preferred_model)
+    elif preferred_model:
+        order.insert(0, preferred_model)
+
+    last_error: Exception | None = None
     async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://reverse-ai-platform.vercel.app",
-                "X-Title": "Reverse AI Studio",
-            },
-            json=payload,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        text = data["choices"][0]["message"]["content"].strip()
-        # Strip markdown fences
-        if text.startswith("```"):
-            lines = text.splitlines()
-            text = "\n".join(lines[1:-1]) if len(lines) > 2 else text
-        # Extract first JSON object found in response
-        import re
-        match = re.search(r'\{[\s\S]*\}', text)
-        if match:
-            text = match.group(0)
-        return json.loads(text)
+        for model in order:
+            try:
+                result = await _call_one_model(image_base64, model, client)
+                return result, model
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code in (429, 503, 502):
+                    last_error = e
+                    continue  # try next model
+                raise
+            except (json.JSONDecodeError, KeyError):
+                last_error = ValueError(f"{model}: invalid JSON response")
+                continue  # try next model
+
+    raise HTTPException(status_code=502, detail=f"All models exhausted. Last error: {last_error}")
 
 
 async def upload_to_supabase_storage(image_base64: str, video_id: str, filename: str) -> str:
@@ -180,18 +213,18 @@ async def analyze_frame(
     token = authorization.split(" ", 1)[1]
     await verify_jwt(token)
 
-    # Call vision AI (OpenRouter)
+    # Call vision AI (OpenRouter) with auto-fallback
+    model_used = request.preferred_model or VISION_MODELS[0]
     try:
-        ai_result = await call_vision_ai(request.image_base64)
-    except (json.JSONDecodeError, KeyError):
-        # Model returned non-JSON — save with empty result rather than failing
+        ai_result, model_used = await call_vision_ai(request.image_base64, request.preferred_model)
+    except HTTPException:
+        raise
+    except Exception:
         ai_result = {
             "objects": [], "tracking_codes": [], "barcodes": [],
             "packaging_status": "unknown", "package_count": 0,
             "label_text": [], "confidence": 0.0, "notes": "parse_error"
         }
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail=f"OpenRouter API error: {e.response.text}")
 
     # Merge client-side results (ZXing barcodes + Tesseract OCR tracking codes)
     barcodes = set(ai_result.get("barcodes") or [])
@@ -225,4 +258,4 @@ async def analyze_frame(
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"Database insert error: {e.response.text}")
 
-    return record
+    return {**record, "model_used": model_used}
