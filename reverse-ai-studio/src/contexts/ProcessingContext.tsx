@@ -113,21 +113,24 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
       videoEl.currentTime = ts
       const onSeeked = () => {
         videoEl.removeEventListener('seeked', onSeeked)
-        try {
-          // Full-res canvas (capped at 1280px wide) for OCR + AI
-          const w = Math.min(videoEl.videoWidth, 1280)
-          const h = Math.round(w * (videoEl.videoHeight / videoEl.videoWidth))
-          const raw = document.createElement('canvas')
-          raw.width = w; raw.height = h
-          raw.getContext('2d')!.drawImage(videoEl, 0, 0, w, h)
+        // Wait 2 animation frames so browser finishes decoding the compressed video frame
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          try {
+            // Full-res — no downscale cap, preserve original video resolution for AI clarity
+            const w = videoEl.videoWidth
+            const h = videoEl.videoHeight
+            const raw = document.createElement('canvas')
+            raw.width = w; raw.height = h
+            raw.getContext('2d')!.drawImage(videoEl, 0, 0, w, h)
 
-          // Tiny thumbnail (64×36) for fast pixel-diff (use raw, not preprocessed)
-          const thumb = document.createElement('canvas')
-          thumb.width = 64; thumb.height = 36
-          thumb.getContext('2d')!.drawImage(videoEl, 0, 0, 64, 36)
+            // Tiny thumbnail (64×36) for fast pixel-diff
+            const thumb = document.createElement('canvas')
+            thumb.width = 64; thumb.height = 36
+            thumb.getContext('2d')!.drawImage(videoEl, 0, 0, 64, 36)
 
-          resolve({ canvas: raw, thumb })
-        } catch (e) { reject(e) }
+            resolve({ canvas: raw, thumb })
+          } catch (e) { reject(e) }
+        }))
       }
       videoEl.addEventListener('seeked', onSeeked)
     })
@@ -287,7 +290,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         setJob(prev => prev ? { ...prev, message: `Analyzing frame at ${ts}s...` } : null)
 
         const filename = `frame_${String(Math.round(ts)).padStart(6, '0')}.jpg`
-        const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1]
+        const base64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1]
 
         const [clientBarcodes, ocrResult] = await Promise.all([
           decodeBarcode(canvas),
