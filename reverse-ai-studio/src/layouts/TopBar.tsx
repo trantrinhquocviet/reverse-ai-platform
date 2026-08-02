@@ -54,7 +54,7 @@ export function TopBar() {
   const location = useLocation()
   const navigate = useNavigate()
   const crumbs = getBreadcrumb(location.pathname)
-  const { job } = useProcessing()
+  const { job, queue } = useProcessing()
 
   const [notifications, setNotifications] = useState<Notification[]>(mockNotifications)
   const [open, setOpen] = useState(false)
@@ -107,7 +107,12 @@ export function TopBar() {
           >
             <Loader2 className="w-3 h-3 text-[#a89bff] animate-spin flex-shrink-0" />
             <div className="flex flex-col items-start gap-0.5">
-              <span className="text-[10px] font-medium text-[#a89bff] leading-none max-w-[120px] truncate">{job.videoName}</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-medium text-[#a89bff] leading-none max-w-[120px] truncate">{job.videoName}</span>
+                {queue.length > 0 && (
+                  <span className="text-[9px] text-[#55556a]">+{queue.length} chờ</span>
+                )}
+              </div>
               <div className="flex items-center gap-1">
                 <div className="w-16 h-0.5 rounded-full bg-[#1e1e2a]">
                   <div

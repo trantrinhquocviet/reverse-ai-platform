@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { Upload, Search, Trash2, Video, LayoutGrid, List, Filter, Link2, CheckCircle2, AlertCircle, X as XIcon } from 'lucide-react'
+import { Upload, Search, Trash2, Video, LayoutGrid, List, Filter, Link2, CheckCircle2, AlertCircle, X as XIcon, Cpu, CheckSquare, Square } from 'lucide-react'
 import { useVideos, useDeleteVideo, useFilterOptions, useUploadVideo, useImportVideoFromUrl } from '@/hooks/useVideos'
 import { Button } from '@/components/Button'
 import { Input, Select } from '@/components/Input'
@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { Modal } from '@/components/Modal'
 import { cn } from '@/utils/cn'
 import { formatRelativeTime } from '@/utils/formatters'
+import { useProcessing } from '@/contexts/ProcessingContext'
 import type { Video as VideoType } from '@/types'
 
 const ITEMS_PER_PAGE = 6
@@ -26,10 +27,13 @@ export function VideoCenter() {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
   const [deleteTarget, setDeleteTarget] = useState<VideoType | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [selectMode, setSelectMode] = useState(false)
 
   const { data: videos, isLoading } = useVideos({ search, status, warehouse, brand })
   const { warehouses, brands } = useFilterOptions()
   const deleteMutation = useDeleteVideo()
+  const { addToQueue, queue, job } = useProcessing()
 
   const totalPages = Math.ceil((videos?.length ?? 0) / ITEMS_PER_PAGE)
   const paginated = videos?.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE)
@@ -40,17 +44,80 @@ export function VideoCenter() {
     setDeleteTarget(null)
   }
 
+  const toggleSelect = (id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (!paginated) return
+    const allIds = paginated.map(v => v.id)
+    const allSelected = allIds.every(id => selected.has(id))
+    setSelected(prev => {
+      const next = new Set(prev)
+      allIds.forEach(id => allSelected ? next.delete(id) : next.add(id))
+      return next
+    })
+  }
+
+  const handleProcessSelected = () => {
+    const toQueue = (videos ?? [])
+      .filter(v => selected.has(v.id) && v.filePath)
+      .map(v => ({ id: v.id, name: v.name, filePath: v.filePath }))
+    if (toQueue.length === 0) return
+    addToQueue(toQueue)
+    setSelected(new Set())
+    setSelectMode(false)
+  }
+
+  const queuedIds = new Set(queue.map(v => v.id))
+  const activeJobId = job?.status === 'running' ? job.videoId : null
+
   return (
     <div className="p-6 space-y-5 animate-fade-in">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-[#f0f0f5]">Video Center</h1>
-          <p className="text-sm text-[#8888a8] mt-0.5">{videos?.length ?? 0} videos total</p>
+          <p className="text-sm text-[#8888a8] mt-0.5">
+            {videos?.length ?? 0} videos total
+            {(queue.length > 0 || activeJobId) && (
+              <span className="ml-2 text-[#a89bff]">
+                · {activeJobId ? '1 đang xử lý' : ''}{queue.length > 0 ? ` · ${queue.length} trong hàng chờ` : ''}
+              </span>
+            )}
+          </p>
         </div>
-        <Button variant="primary" leftIcon={<Upload className="w-4 h-4" />} onClick={() => setUploadOpen(true)}>
-          Upload Video
-        </Button>
+        <div className="flex items-center gap-2">
+          {selectMode ? (
+            <>
+              <span className="text-xs text-[#8888a8]">{selected.size} đã chọn</span>
+              <Button
+                variant="outline"
+                leftIcon={<Cpu className="w-4 h-4" />}
+                disabled={selected.size === 0}
+                onClick={handleProcessSelected}
+              >
+                Process {selected.size > 0 ? `(${selected.size})` : ''}
+              </Button>
+              <Button variant="ghost" onClick={() => { setSelectMode(false); setSelected(new Set()) }}>
+                Huỷ
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="ghost" leftIcon={<CheckSquare className="w-4 h-4" />} onClick={() => setSelectMode(true)}>
+                Select
+              </Button>
+              <Button variant="primary" leftIcon={<Upload className="w-4 h-4" />} onClick={() => setUploadOpen(true)}>
+                Upload Video
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Filters */}
@@ -133,8 +200,13 @@ export function VideoCenter() {
             <VideoGridCard
               key={video.id}
               video={video}
-              onOpen={() => navigate(`/videos/${video.id}`)}
+              onOpen={() => !selectMode && navigate(`/videos/${video.id}`)}
               onDelete={() => setDeleteTarget(video)}
+              selectMode={selectMode}
+              selected={selected.has(video.id)}
+              onToggleSelect={() => toggleSelect(video.id)}
+              isProcessing={activeJobId === video.id}
+              isQueued={queuedIds.has(video.id)}
             />
           ))}
         </div>
@@ -143,6 +215,15 @@ export function VideoCenter() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-[#1e1e2a] bg-[#111118]">
+                {selectMode && (
+                  <th className="px-4 py-3 w-8">
+                    <button onClick={toggleSelectAll}>
+                      {paginated?.every(v => selected.has(v.id))
+                        ? <CheckSquare className="w-4 h-4 text-[#a89bff]" />
+                        : <Square className="w-4 h-4 text-[#55556a]" />}
+                    </button>
+                  </th>
+                )}
                 {['Video', 'Warehouse', 'Brand', 'Duration', 'Uploaded', 'Status', ''].map((h) => (
                   <th key={h} className="text-left px-4 py-3 text-xs font-medium text-[#8888a8]">{h}</th>
                 ))}
@@ -152,12 +233,35 @@ export function VideoCenter() {
               {paginated.map((video, i) => (
                 <tr
                   key={video.id}
-                  className={cn('border-b border-[#1e1e2a] hover:bg-[#ffffff04] transition-colors cursor-pointer', i === paginated.length - 1 && 'border-b-0')}
-                  onClick={() => navigate(`/videos/${video.id}`)}
+                  className={cn(
+                    'border-b border-[#1e1e2a] hover:bg-[#ffffff04] transition-colors cursor-pointer',
+                    i === paginated.length - 1 && 'border-b-0',
+                    selected.has(video.id) && 'bg-[#7c6af708]'
+                  )}
+                  onClick={() => selectMode ? toggleSelect(video.id) : navigate(`/videos/${video.id}`)}
                 >
+                  {selectMode && (
+                    <td className="px-4 py-3 w-8">
+                      {selected.has(video.id)
+                        ? <CheckSquare className="w-4 h-4 text-[#a89bff]" />
+                        : <Square className="w-4 h-4 text-[#55556a]" />}
+                    </td>
+                  )}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <img src={video.thumbnail} alt="" className="w-14 h-9 object-cover rounded-[6px]" />
+                      <div className="relative">
+                        <img src={video.thumbnail} alt="" className="w-14 h-9 object-cover rounded-[6px]" />
+                        {activeJobId === video.id && (
+                          <div className="absolute inset-0 rounded-[6px] bg-[#7c6af740] flex items-center justify-center">
+                            <Cpu className="w-3 h-3 text-[#a89bff] animate-pulse" />
+                          </div>
+                        )}
+                        {queuedIds.has(video.id) && (
+                          <div className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-[#7c6af7] flex items-center justify-center">
+                            <span className="text-[7px] text-white font-bold">{Array.from(queuedIds).indexOf(video.id) + 1}</span>
+                          </div>
+                        )}
+                      </div>
                       <span className="text-xs text-[#f0f0f5] max-w-[160px] truncate">{video.name}</span>
                     </div>
                   </td>
@@ -214,34 +318,73 @@ export function VideoCenter() {
   )
 }
 
-function VideoGridCard({ video, onOpen, onDelete }: { video: VideoType; onOpen: () => void; onDelete: () => void }) {
+function VideoGridCard({ video, onOpen, onDelete, selectMode, selected, onToggleSelect, isProcessing, isQueued }: {
+  video: VideoType
+  onOpen: () => void
+  onDelete: () => void
+  selectMode: boolean
+  selected: boolean
+  onToggleSelect: () => void
+  isProcessing: boolean
+  isQueued: boolean
+}) {
   return (
-    <div className="rounded-[14px] bg-[#111118] border border-[#1e1e2a] overflow-hidden hover:border-[#2a2a38] transition-all duration-200 group">
-      <div className="relative cursor-pointer" onClick={onOpen}>
+    <div
+      className={cn(
+        'rounded-[14px] bg-[#111118] border overflow-hidden transition-all duration-200 group',
+        selected ? 'border-[#7c6af7]' : 'border-[#1e1e2a] hover:border-[#2a2a38]',
+        selectMode && 'cursor-pointer'
+      )}
+      onClick={selectMode ? onToggleSelect : undefined}
+    >
+      <div className="relative" onClick={!selectMode ? onOpen : undefined} style={{ cursor: selectMode ? undefined : 'pointer' }}>
         <img src={video.thumbnail} alt={video.name} className="w-full h-36 object-cover" />
-        <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-          <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
-            <Video className="w-4 h-4 text-white" />
+        {/* Overlay */}
+        {!selectMode && (
+          <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+            <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
+              <Video className="w-4 h-4 text-white" />
+            </div>
           </div>
-        </div>
+        )}
+        {/* Select checkbox */}
+        {selectMode && (
+          <div className="absolute top-2 left-2">
+            {selected
+              ? <CheckSquare className="w-5 h-5 text-[#a89bff] drop-shadow" />
+              : <Square className="w-5 h-5 text-white/70 drop-shadow" />}
+          </div>
+        )}
+        {/* Processing indicator */}
+        {isProcessing && (
+          <div className="absolute inset-0 bg-[#7c6af730] flex items-center justify-center">
+            <div className="flex items-center gap-1.5 bg-[#0d0d14cc] px-2.5 py-1.5 rounded-full">
+              <Cpu className="w-3.5 h-3.5 text-[#a89bff] animate-pulse" />
+              <span className="text-[10px] text-[#a89bff] font-medium">Processing...</span>
+            </div>
+          </div>
+        )}
+        {/* Queue badge */}
+        {isQueued && !isProcessing && (
+          <div className="absolute top-2 right-2 bg-[#7c6af7] text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full">
+            In queue
+          </div>
+        )}
         <div className="absolute bottom-2 right-2 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded font-mono">
           {video.duration}
         </div>
       </div>
       <div className="p-3">
         <div className="flex items-start justify-between gap-2">
-          <p
-            className="text-xs font-medium text-[#f0f0f5] truncate cursor-pointer hover:text-[#a89bff] transition-colors flex-1"
-            onClick={onOpen}
-          >
-            {video.name}
-          </p>
-          <button
-            onClick={onDelete}
-            className="p-1 rounded-[5px] text-[#55556a] hover:text-[#f87171] hover:bg-[#ef444415] transition-colors flex-shrink-0"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+          <p className="text-xs font-medium text-[#f0f0f5] truncate flex-1">{video.name}</p>
+          {!selectMode && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete() }}
+              className="p-1 rounded-[5px] text-[#55556a] hover:text-[#f87171] hover:bg-[#ef444415] transition-colors flex-shrink-0"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
         <div className="flex items-center justify-between mt-2">
           <p className="text-[10px] text-[#8888a8]">{video.warehouse} · {video.brand}</p>

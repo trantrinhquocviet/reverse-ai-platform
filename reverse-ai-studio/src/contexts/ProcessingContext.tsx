@@ -1,4 +1,4 @@
-import { createContext, useContext, useRef, useState, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useRef, useState, useCallback, useEffect, type ReactNode } from 'react'
 import Tesseract from 'tesseract.js'
 import { BrowserMultiFormatReader } from '@zxing/library'
 import { supabase } from '@/services/api'
@@ -21,8 +21,18 @@ export interface ProcessingJob {
   message: string
 }
 
+export interface QueuedVideo {
+  id: string
+  name: string
+  filePath: string
+}
+
 interface ProcessingContextValue {
   job: ProcessingJob | null
+  queue: QueuedVideo[]
+  addToQueue: (videos: QueuedVideo[]) => void
+  removeFromQueue: (videoId: string) => void
+  clearQueue: () => void
   startProcessing: (videoId: string, videoName: string, videoEl: HTMLVideoElement) => Promise<void>
   clearJob: () => void
 }
@@ -37,6 +47,9 @@ export function useProcessing() {
 
 export function ProcessingProvider({ children }: { children: ReactNode }) {
   const [job, setJob] = useState<ProcessingJob | null>(null)
+  const [queue, setQueue] = useState<QueuedVideo[]>([])
+  const processingRef = useRef(false)
+  const hiddenVideoRef = useRef<HTMLVideoElement | null>(null)
   const zxingRef = useRef<BrowserMultiFormatReader | null>(null)
 
   const getZxing = () => {
@@ -149,8 +162,44 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
   const clearJob = useCallback(() => setJob(null), [])
 
+  const addToQueue = useCallback((videos: QueuedVideo[]) => {
+    setQueue(prev => {
+      const existingIds = new Set(prev.map(v => v.id))
+      return [...prev, ...videos.filter(v => !existingIds.has(v.id))]
+    })
+  }, [])
+
+  const removeFromQueue = useCallback((videoId: string) => {
+    setQueue(prev => prev.filter(v => v.id !== videoId))
+  }, [])
+
+  const clearQueue = useCallback(() => setQueue([]), [])
+
+  // Auto-process queue: when job is idle and queue has items, pick next and run
+  useEffect(() => {
+    if (processingRef.current) return
+    if (queue.length === 0) return
+    if (job && job.status === 'running') return
+
+    const next = queue[0]
+    if (!next.filePath) return
+
+    processingRef.current = true
+    setQueue(prev => prev.slice(1))
+
+    const videoEl = hiddenVideoRef.current!
+    videoEl.src = next.filePath
+    videoEl.load()
+
+    startProcessing(next.id, next.name, videoEl).finally(() => {
+      processingRef.current = false
+    })
+  }, [queue, job, startProcessing])
+
   return (
-    <ProcessingContext.Provider value={{ job, startProcessing, clearJob }}>
+    <ProcessingContext.Provider value={{ job, queue, addToQueue, removeFromQueue, clearQueue, startProcessing, clearJob }}>
+      {/* Hidden video element used for background queue processing */}
+      <video ref={hiddenVideoRef} className="hidden" preload="metadata" crossOrigin="anonymous" />
       {children}
     </ProcessingContext.Provider>
   )
