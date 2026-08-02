@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Brain, Database, Play, Download, CheckCircle, Loader2, AlertCircle, BarChart3, Layers, HardDrive, Trash2, RefreshCw, Star, History, ChevronDown, ChevronUp } from 'lucide-react'
+import { Brain, Database, Play, Download, CheckCircle, Loader2, AlertCircle, BarChart3, Layers, HardDrive, Trash2, RefreshCw, Star, History, X, ZoomIn } from 'lucide-react'
 import { supabase } from '@/services/api'
 import { cn } from '@/utils/cn'
 
@@ -61,7 +61,6 @@ function loadHistory(): TestRecord[] {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? '[]') } catch { return [] }
 }
 function saveHistory(h: TestRecord[]) {
-  // keep newest MAX_HISTORY, trim thumbnails if storage pressure
   localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(-MAX_HISTORY)))
 }
 
@@ -117,6 +116,43 @@ const TASK_INFO = [
   { key: 'object',    label: 'Dominant Object',  labels: OBJECT_LABELS,    icon: '🔍' },
 ]
 
+// ── Zoom Modal ────────────────────────────────────────────────────────────────
+function ZoomModal({ src, onClose }: { src: string; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center"
+      onClick={onClose}
+    >
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 text-white/60 hover:text-white transition-colors"
+        aria-label="Close"
+      >
+        <X className="w-6 h-6" />
+      </button>
+      <img
+        src={src}
+        alt="zoom"
+        className="max-w-[90vw] max-h-[90vh] object-contain rounded-[10px] shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      />
+    </div>
+  )
+}
+
+// ── Badge color helpers ───────────────────────────────────────────────────────
+function packagingBadgeColor(label: string) {
+  if (label === 'ok') return 'bg-green-500/80 text-white'
+  if (label === 'damaged') return 'bg-red-500/80 text-white'
+  return 'bg-yellow-500/80 text-black'
+}
+
 export function MiniAITrainer() {
   const [phase, setPhase] = useState<'idle' | 'extracting' | 'training' | 'done' | 'error'>('idle')
   const [progress, setProgress] = useState({ step: '', percent: 0, epoch: 0, losses: [0, 0, 0, 0], accs: [0, 0, 0, 0] })
@@ -125,7 +161,6 @@ export function MiniAITrainer() {
   const [activeId, setActiveId] = useState<string | null>(() => localStorage.getItem(ACTIVE_KEY))
   const [loadingId, setLoadingId] = useState<string | null>(null)
   const [history, setHistory] = useState<TestRecord[]>(loadHistory)
-  const [showHistory, setShowHistory] = useState(false)
   const [testResult, setTestResult] = useState<{
     packaging: { label: string; conf: number }
     hasLabel:  { label: string; conf: number }
@@ -133,6 +168,18 @@ export function MiniAITrainer() {
     object:    { label: string; conf: number }
   } | null>(null)
   const [testImage, setTestImage] = useState<string | null>(null)
+
+  // Right panel tab: 'training' | 'history'
+  const [rightTab, setRightTab] = useState<'training' | 'history'>('training')
+
+  // History filters
+  const [filterVersion, setFilterVersion] = useState<string>('all')
+  const [filterSort, setFilterSort] = useState<'newest' | 'oldest'>('newest')
+  const [filterMinConf, setFilterMinConf] = useState<number>(0)  // 0 = any, 50, 70, 90
+
+  // Zoom modal
+  const [zoomSrc, setZoomSrc] = useState<string | null>(null)
+
   const modelRef = useRef<any>(null)
   const fileRef  = useRef<HTMLInputElement>(null)
 
@@ -165,7 +212,6 @@ export function MiniAITrainer() {
         setModelReady(true)
         setPhase('done')
       } catch {
-        // stale pointer — remove
         setVersions(vs => { const next = vs.filter(v => v.id !== activeId); saveVersions(next); return next })
         localStorage.removeItem(ACTIVE_KEY)
         setActiveId(null)
@@ -305,7 +351,6 @@ export function MiniAITrainer() {
 
       xs.dispose(); ysPackaging.dispose(); ysLabel.dispose(); ysHand.dispose(); ysObject.dispose()
 
-      // Save as new version
       setProgress(p => ({ ...p, step: 'Saving to IndexedDB...', percent: 98 }))
       const existingVersions = loadVersions()
       const versionNum = existingVersions.length + 1
@@ -365,7 +410,6 @@ export function MiniAITrainer() {
       const results = { packaging, hasLabel, hasHand, object }
       setTestResult(results)
 
-      // Generate small thumbnail (~64px wide) for history
       const thumb = (() => {
         try {
           const c = document.createElement('canvas')
@@ -403,8 +447,29 @@ export function MiniAITrainer() {
 
   const avgAcc = (accs: number[]) => Math.round(accs.reduce((a, b) => a + b, 0) / accs.length)
 
+  // ── History filtering ─────────────────────────────────────────────────────
+  const avgConfOfRecord = (rec: TestRecord) =>
+    Math.round((rec.results.packaging.conf + rec.results.hasLabel.conf + rec.results.hasHand.conf + rec.results.object.conf) / 4)
+
+  const filteredHistory = (() => {
+    let h = [...history]
+    if (filterVersion !== 'all') h = h.filter(r => r.versionId === filterVersion)
+    if (filterMinConf > 0) h = h.filter(r => avgConfOfRecord(r) >= filterMinConf)
+    if (filterSort === 'newest') h = h.reverse()
+    return h
+  })()
+
+  const showVersionComparison = filterVersion === 'all' && versions.length >= 2
+
+  const handleCloseZoom = useCallback(() => setZoomSrc(null), [])
+
+  const taskKeys = ['packaging', 'hasLabel', 'hasHand', 'object'] as const
+
   return (
     <div className="p-6 space-y-5 animate-fade-in">
+      {/* Zoom Modal */}
+      {zoomSrc && <ZoomModal src={zoomSrc} onClose={handleCloseZoom} />}
+
       {/* Header */}
       <div className="flex items-center gap-3">
         <div className="w-9 h-9 rounded-[10px] bg-[#7c6af720] flex items-center justify-center">
@@ -417,7 +482,7 @@ export function MiniAITrainer() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        {/* Left panel */}
+        {/* ── Left panel ─────────────────────────────────────────────────── */}
         <div className="space-y-4">
           {/* Dataset */}
           <div className="rounded-[14px] bg-[#111118] border border-[#1e1e2a] p-4 space-y-3">
@@ -560,7 +625,46 @@ export function MiniAITrainer() {
               >
                 Upload ảnh để test
               </button>
-              {testImage && <img src={testImage} alt="test" className="w-full aspect-video object-cover rounded-[8px]" />}
+
+              {/* Test image with result badge overlay */}
+              {testImage && (
+                <div className="relative group">
+                  <img
+                    src={testImage}
+                    alt="test"
+                    className="w-full aspect-video object-cover rounded-[8px] cursor-zoom-in"
+                    onClick={() => setZoomSrc(testImage)}
+                  />
+                  {/* Zoom hint */}
+                  <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                    <div className="bg-black/60 rounded-[6px] p-1">
+                      <ZoomIn className="w-3.5 h-3.5 text-white" />
+                    </div>
+                  </div>
+                  {/* Badge overlay when result is available */}
+                  {testResult && (
+                    <div className="absolute bottom-2 left-2 right-2 flex flex-wrap gap-1 pointer-events-none">
+                      <span className={cn('text-[9px] font-semibold px-1.5 py-0.5 rounded-[4px] backdrop-blur-sm', packagingBadgeColor(testResult.packaging.label))}>
+                        📦 {testResult.packaging.label} {testResult.packaging.conf}%
+                      </span>
+                      {testResult.hasHand.label === 'yes' && (
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-[4px] bg-[#a89bff]/80 text-white backdrop-blur-sm">
+                          ✋ hand {testResult.hasHand.conf}%
+                        </span>
+                      )}
+                      {testResult.hasLabel.label === 'yes' && (
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-[4px] bg-blue-500/80 text-white backdrop-blur-sm">
+                          🏷️ label {testResult.hasLabel.conf}%
+                        </span>
+                      )}
+                      <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-[4px] bg-[#1e1e2a]/90 text-[#8888a8] backdrop-blur-sm">
+                        🔍 {testResult.object.label.replace(/_/g, ' ')} {testResult.object.conf}%
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {testResult && (
                 <div className="space-y-2">
                   {[
@@ -595,249 +699,341 @@ export function MiniAITrainer() {
           )}
         </div>
 
-        {/* Right: training panel */}
-        <div className="lg:col-span-2 rounded-[14px] bg-[#111118] border border-[#1e1e2a] p-5 space-y-5">
-          <div className="flex items-center gap-2">
-            <BarChart3 className="w-4 h-4 text-[#55556a]" />
-            <h3 className="text-sm font-semibold text-[#f0f0f5]">Multi-Task Training</h3>
-            {versions.length > 0 && (
-              <span className="ml-auto text-[10px] text-[#55556a]">
-                Next: <span className="text-[#a89bff]">v{versions.length + 1}</span>
-              </span>
-            )}
-          </div>
-
-          {/* Architecture */}
-          <div className="bg-[#0d0d14] border border-[#1e1e2a] rounded-[10px] p-4 space-y-3">
-            <p className="text-[10px] text-[#55556a] uppercase tracking-wider">Model Architecture</p>
-            <div className="flex items-start gap-3">
-              <div className="flex-shrink-0 flex flex-col items-center gap-1">
-                <div className="px-3 py-2 bg-[#7c6af720] border border-[#7c6af740] rounded-[8px] text-[10px] text-[#a89bff] text-center">
-                  MobileNetV2<br/><span className="text-[#55556a]">feature extractor</span>
-                </div>
-                <div className="w-px h-3 bg-[#2a2a3a]" />
-                <div className="px-3 py-2 bg-[#1e1e2a] rounded-[8px] text-[10px] text-[#8888a8] text-center">
-                  Dense 256 + Dropout<br/><span className="text-[#55556a]">shared backbone</span>
-                </div>
-                <div className="flex gap-2 mt-1">
-                  {['↙', '↓', '↓', '↘'].map((a, i) => <span key={i} className="text-[#44445a] text-xs">{a}</span>)}
-                </div>
-              </div>
-              <div className="flex-1 grid grid-cols-2 gap-2">
-                {TASK_INFO.map((t, i) => (
-                  <div key={t.key} className="bg-[#1a1a24] rounded-[8px] p-2.5">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <span className="text-xs">{t.icon}</span>
-                      <span className="text-[10px] text-[#a89bff] font-medium">Head {i + 1}</span>
-                    </div>
-                    <p className="text-[10px] text-[#f0f0f5]">{t.label}</p>
-                    <p className="text-[9px] text-[#55556a] mt-0.5">{t.labels.length} classes</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="flex items-center gap-2 pt-1">
-              <Layers className="w-3 h-3 text-[#55556a]" />
-              <p className="text-[10px] text-[#55556a]">All 4 tasks train simultaneously — shared features, 4 separate output heads</p>
-            </div>
-          </div>
-
-          {/* Progress */}
-          {phase !== 'idle' && (
-            <div className="space-y-3">
-              <div className="flex justify-between text-xs">
-                <span className={cn('text-[#8888a8]', phase === 'error' && 'text-red-400')}>{progress.step}</span>
-                <span className="text-[#f0f0f5]">{progress.percent}%</span>
-              </div>
-              <div className="w-full h-2 rounded-full bg-[#1e1e2a]">
-                <div
-                  className={cn('h-2 rounded-full transition-all duration-500',
-                    phase === 'error' ? 'bg-red-500' : phase === 'done' ? 'bg-green-500' : 'bg-[#7c6af7]')}
-                  style={{ width: `${progress.percent}%` }}
-                />
-              </div>
-
-              {phase === 'training' && progress.epoch > 0 && (
-                <div className="grid grid-cols-2 gap-2">
-                  {TASK_INFO.map((t, i) => (
-                    <div key={t.key} className="bg-[#1a1a24] rounded-[8px] p-2.5">
-                      <div className="flex items-center gap-1 mb-1">
-                        <span className="text-[10px]">{t.icon}</span>
-                        <span className="text-[9px] text-[#55556a]">{t.label}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <div>
-                          <p className="text-[9px] text-[#44445a]">Loss</p>
-                          <p className="text-xs font-bold text-[#f87171]">{progress.losses[i]}</p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-[9px] text-[#44445a]">Acc</p>
-                          <p className="text-xs font-bold text-[#4ade80]">{progress.accs[i]}%</p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {phase === 'done' && (
-                <div className="flex items-center gap-2 bg-[#16a34a20] rounded-[8px] p-3">
-                  <CheckCircle className="w-4 h-4 text-green-400" />
-                  <p className="text-xs text-green-400">
-                    Xong! {versions.find(v => v.id === activeId)?.id} đã lưu vào IndexedDB. Train lại để tạo version mới.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {(phase === 'idle' || phase === 'error' || phase === 'done') && (
+        {/* ── Right panel with tabs ──────────────────────────────────────── */}
+        <div className="lg:col-span-2 rounded-[14px] bg-[#111118] border border-[#1e1e2a] overflow-hidden flex flex-col">
+          {/* Tab bar */}
+          <div className="flex border-b border-[#1e1e2a] px-5 pt-4">
             <button
-              onClick={startTraining}
-              disabled={!canTrain || isLoading || !!loadingId}
+              onClick={() => setRightTab('training')}
               className={cn(
-                'w-full flex items-center justify-center gap-2 py-3 rounded-[10px] text-sm font-medium transition-colors',
-                canTrain && !isLoading && !loadingId
-                  ? 'bg-[#7c6af7] hover:bg-[#6b5ce7] text-white'
-                  : 'bg-[#1e1e2a] text-[#55556a] cursor-not-allowed'
+                'pb-3 mr-6 text-sm font-medium transition-colors border-b-2 -mb-px',
+                rightTab === 'training'
+                  ? 'border-[#a89bff] text-[#f0f0f5]'
+                  : 'border-transparent text-[#55556a] hover:text-[#8888a8]'
               )}
             >
-              <Play className="w-4 h-4" />
-              {phase === 'error' ? 'Thử lại' : versions.length > 0 ? `Train v${versions.length + 1}` : 'Train All 4 Tasks'}
+              <span className="flex items-center gap-2">
+                <BarChart3 className="w-3.5 h-3.5" />
+                Training
+              </span>
             </button>
-          )}
-          {(phase === 'extracting' || phase === 'training') && (
-            <div className="flex items-center justify-center gap-2 py-3 text-[#8888a8] text-sm">
-              <Loader2 className="w-4 h-4 animate-spin text-[#7c6af7]" />
-              Đang train trong browser...
+            <button
+              onClick={() => setRightTab('history')}
+              className={cn(
+                'pb-3 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2',
+                rightTab === 'history'
+                  ? 'border-[#a89bff] text-[#f0f0f5]'
+                  : 'border-transparent text-[#55556a] hover:text-[#8888a8]'
+              )}
+            >
+              <History className="w-3.5 h-3.5" />
+              History
+              {history.length > 0 && (
+                <span className={cn(
+                  'text-[9px] px-1.5 py-0.5 rounded-full font-medium',
+                  rightTab === 'history' ? 'bg-[#a89bff]/20 text-[#a89bff]' : 'bg-[#1e1e2a] text-[#55556a]'
+                )}>
+                  {history.length}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* ── Training tab content ───────────────────────────────────── */}
+          {rightTab === 'training' && (
+            <div className="p-5 space-y-5 flex-1">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-[#f0f0f5]">Multi-Task Training</h3>
+                {versions.length > 0 && (
+                  <span className="ml-auto text-[10px] text-[#55556a]">
+                    Next: <span className="text-[#a89bff]">v{versions.length + 1}</span>
+                  </span>
+                )}
+              </div>
+
+              {/* Architecture */}
+              <div className="bg-[#0d0d14] border border-[#1e1e2a] rounded-[10px] p-4 space-y-3">
+                <p className="text-[10px] text-[#55556a] uppercase tracking-wider">Model Architecture</p>
+                <div className="flex items-start gap-3">
+                  <div className="flex-shrink-0 flex flex-col items-center gap-1">
+                    <div className="px-3 py-2 bg-[#7c6af720] border border-[#7c6af740] rounded-[8px] text-[10px] text-[#a89bff] text-center">
+                      MobileNetV2<br/><span className="text-[#55556a]">feature extractor</span>
+                    </div>
+                    <div className="w-px h-3 bg-[#2a2a3a]" />
+                    <div className="px-3 py-2 bg-[#1e1e2a] rounded-[8px] text-[10px] text-[#8888a8] text-center">
+                      Dense 256 + Dropout<br/><span className="text-[#55556a]">shared backbone</span>
+                    </div>
+                    <div className="flex gap-2 mt-1">
+                      {['↙', '↓', '↓', '↘'].map((a, i) => <span key={i} className="text-[#44445a] text-xs">{a}</span>)}
+                    </div>
+                  </div>
+                  <div className="flex-1 grid grid-cols-2 gap-2">
+                    {TASK_INFO.map((t, i) => (
+                      <div key={t.key} className="bg-[#1a1a24] rounded-[8px] p-2.5">
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className="text-xs">{t.icon}</span>
+                          <span className="text-[10px] text-[#a89bff] font-medium">Head {i + 1}</span>
+                        </div>
+                        <p className="text-[10px] text-[#f0f0f5]">{t.label}</p>
+                        <p className="text-[9px] text-[#55556a] mt-0.5">{t.labels.length} classes</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <Layers className="w-3 h-3 text-[#55556a]" />
+                  <p className="text-[10px] text-[#55556a]">All 4 tasks train simultaneously — shared features, 4 separate output heads</p>
+                </div>
+              </div>
+
+              {/* Progress */}
+              {phase !== 'idle' && (
+                <div className="space-y-3">
+                  <div className="flex justify-between text-xs">
+                    <span className={cn('text-[#8888a8]', phase === 'error' && 'text-red-400')}>{progress.step}</span>
+                    <span className="text-[#f0f0f5]">{progress.percent}%</span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-[#1e1e2a]">
+                    <div
+                      className={cn('h-2 rounded-full transition-all duration-500',
+                        phase === 'error' ? 'bg-red-500' : phase === 'done' ? 'bg-green-500' : 'bg-[#7c6af7]')}
+                      style={{ width: `${progress.percent}%` }}
+                    />
+                  </div>
+
+                  {phase === 'training' && progress.epoch > 0 && (
+                    <div className="grid grid-cols-2 gap-2">
+                      {TASK_INFO.map((t, i) => (
+                        <div key={t.key} className="bg-[#1a1a24] rounded-[8px] p-2.5">
+                          <div className="flex items-center gap-1 mb-1">
+                            <span className="text-[10px]">{t.icon}</span>
+                            <span className="text-[9px] text-[#55556a]">{t.label}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <div>
+                              <p className="text-[9px] text-[#44445a]">Loss</p>
+                              <p className="text-xs font-bold text-[#f87171]">{progress.losses[i]}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[9px] text-[#44445a]">Acc</p>
+                              <p className="text-xs font-bold text-[#4ade80]">{progress.accs[i]}%</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {phase === 'done' && (
+                    <div className="flex items-center gap-2 bg-[#16a34a20] rounded-[8px] p-3">
+                      <CheckCircle className="w-4 h-4 text-green-400" />
+                      <p className="text-xs text-green-400">
+                        Xong! {versions.find(v => v.id === activeId)?.id} đã lưu vào IndexedDB. Train lại để tạo version mới.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(phase === 'idle' || phase === 'error' || phase === 'done') && (
+                <button
+                  onClick={startTraining}
+                  disabled={!canTrain || isLoading || !!loadingId}
+                  className={cn(
+                    'w-full flex items-center justify-center gap-2 py-3 rounded-[10px] text-sm font-medium transition-colors',
+                    canTrain && !isLoading && !loadingId
+                      ? 'bg-[#7c6af7] hover:bg-[#6b5ce7] text-white'
+                      : 'bg-[#1e1e2a] text-[#55556a] cursor-not-allowed'
+                  )}
+                >
+                  <Play className="w-4 h-4" />
+                  {phase === 'error' ? 'Thử lại' : versions.length > 0 ? `Train v${versions.length + 1}` : 'Train All 4 Tasks'}
+                </button>
+              )}
+              {(phase === 'extracting' || phase === 'training') && (
+                <div className="flex items-center justify-center gap-2 py-3 text-[#8888a8] text-sm">
+                  <Loader2 className="w-4 h-4 animate-spin text-[#7c6af7]" />
+                  Đang train trong browser...
+                </div>
+              )}
+
+              {/* Pipeline notes */}
+              <div className="border-t border-[#1e1e2a] pt-4 space-y-1.5">
+                <p className="text-[10px] text-[#55556a] font-medium uppercase tracking-wide">Pipeline</p>
+                {[
+                  '1. MobileNetV2 → extract 1280-dim feature vector từ mỗi frame',
+                  '2. Shared Dense(256) layer học chung representation',
+                  '3. Head 1 (Packaging): ok / damaged / unknown',
+                  '4. Head 2 (Label): shipping label có xuất hiện không?',
+                  '5. Head 3 (Hand): bàn tay người có trong frame không?',
+                  '6. Head 4 (Object): vật thể chủ đạo trong frame là gì?',
+                  '7. 4 loss functions train song song — 1 backward pass duy nhất',
+                ].map(s => <p key={s} className="text-[10px] text-[#55556a]">{s}</p>)}
+              </div>
             </div>
           )}
 
-          {/* How it works */}
-          <div className="border-t border-[#1e1e2a] pt-4 space-y-1.5">
-            <p className="text-[10px] text-[#55556a] font-medium uppercase tracking-wide">Pipeline</p>
-            {[
-              '1. MobileNetV2 → extract 1280-dim feature vector từ mỗi frame',
-              '2. Shared Dense(256) layer học chung representation',
-              '3. Head 1 (Packaging): ok / damaged / unknown',
-              '4. Head 2 (Label): shipping label có xuất hiện không?',
-              '5. Head 3 (Hand): bàn tay người có trong frame không?',
-              '6. Head 4 (Object): vật thể chủ đạo trong frame là gì?',
-              '7. 4 loss functions train song song — 1 backward pass duy nhất',
-            ].map(s => <p key={s} className="text-[10px] text-[#55556a]">{s}</p>)}
-          </div>
-        </div>
-      </div>
+          {/* ── History tab content ────────────────────────────────────── */}
+          {rightTab === 'history' && (
+            <div className="p-5 flex-1 space-y-4">
+              {history.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+                  <History className="w-8 h-8 text-[#2a2a3a]" />
+                  <p className="text-sm text-[#55556a]">No test history yet</p>
+                  <p className="text-[10px] text-[#44445a]">Test an image in the Test Model panel to see records here.</p>
+                </div>
+              ) : (
+                <>
+                  {/* Filter bar */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Version filter */}
+                    <select
+                      value={filterVersion}
+                      onChange={e => setFilterVersion(e.target.value)}
+                      className="text-xs bg-[#1e1e2a] border border-[#2a2a3a] text-[#f0f0f5] rounded-[8px] px-2.5 py-1.5 focus:outline-none focus:border-[#a89bff] transition-colors"
+                    >
+                      <option value="all">All versions</option>
+                      {versions.map(v => (
+                        <option key={v.id} value={v.id}>v{v.versionNum}</option>
+                      ))}
+                    </select>
 
-      {/* ── Test History ───────────────────────────────────────────────────── */}
-      {history.length > 0 && (
-        <div className="rounded-[14px] bg-[#111118] border border-[#1e1e2a] overflow-hidden">
-          <button
-            onClick={() => setShowHistory(h => !h)}
-            className="w-full flex items-center gap-2 p-4 hover:bg-[#16161f] transition-colors"
-          >
-            <History className="w-4 h-4 text-[#55556a]" />
-            <h3 className="text-sm font-semibold text-[#f0f0f5]">Test History</h3>
-            <span className="text-[10px] text-[#55556a] ml-1">{history.length} records</span>
-            <button
-              onClick={e => { e.stopPropagation(); const next: TestRecord[] = []; saveHistory(next); setHistory(next) }}
-              className="ml-auto mr-2 text-[#55556a] hover:text-red-400 transition-colors text-[10px]"
-            >
-              clear all
-            </button>
-            {showHistory ? <ChevronUp className="w-4 h-4 text-[#55556a]" /> : <ChevronDown className="w-4 h-4 text-[#55556a]" />}
-          </button>
+                    {/* Sort */}
+                    <select
+                      value={filterSort}
+                      onChange={e => setFilterSort(e.target.value as 'newest' | 'oldest')}
+                      className="text-xs bg-[#1e1e2a] border border-[#2a2a3a] text-[#f0f0f5] rounded-[8px] px-2.5 py-1.5 focus:outline-none focus:border-[#a89bff] transition-colors"
+                    >
+                      <option value="newest">Newest first</option>
+                      <option value="oldest">Oldest first</option>
+                    </select>
 
-          {showHistory && (
-            <div className="border-t border-[#1e1e2a] p-4 space-y-3">
-              {/* Version comparison summary */}
-              {versions.length > 1 && (() => {
-                // For each version, compute avg conf per task across its test records
-                const taskKeys = ['packaging', 'hasLabel', 'hasHand', 'object'] as const
-                return (
-                  <div className="bg-[#0d0d14] rounded-[10px] p-3 space-y-2 mb-4">
-                    <p className="text-[10px] text-[#55556a] uppercase tracking-wider">Version Comparison (avg confidence)</p>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-[10px]">
-                        <thead>
-                          <tr>
-                            <th className="text-left text-[#44445a] pb-2 pr-4">Version</th>
-                            <th className="text-left text-[#44445a] pb-2 pr-3">Tests</th>
-                            {TASK_INFO.map(t => (
-                              <th key={t.key} className="text-left text-[#44445a] pb-2 pr-3">{t.icon}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {versions.map(ver => {
-                            const vRecs = history.filter(r => r.versionId === ver.id)
-                            if (!vRecs.length) return null
-                            const avgConf = (key: typeof taskKeys[number]) =>
-                              Math.round(vRecs.reduce((s, r) => s + r.results[key].conf, 0) / vRecs.length)
-                            return (
-                              <tr key={ver.id} className={cn(ver.id === activeId && 'text-[#a89bff]')}>
-                                <td className="pr-4 pb-1.5 font-medium">
-                                  {ver.id === activeId && <Star className="w-2.5 h-2.5 inline mr-1" fill="currentColor" />}
-                                  v{ver.versionNum}
-                                </td>
-                                <td className="pr-3 pb-1.5 text-[#55556a]">{vRecs.length}</td>
-                                {taskKeys.map(k => (
-                                  <td key={k} className={cn('pr-3 pb-1.5 font-medium',
-                                    avgConf(k) >= 80 ? 'text-green-400' : avgConf(k) >= 60 ? 'text-yellow-400' : 'text-[#55556a]'
-                                  )}>
-                                    {avgConf(k)}%
-                                  </td>
+                    {/* Min avg confidence */}
+                    <select
+                      value={filterMinConf}
+                      onChange={e => setFilterMinConf(Number(e.target.value))}
+                      className="text-xs bg-[#1e1e2a] border border-[#2a2a3a] text-[#f0f0f5] rounded-[8px] px-2.5 py-1.5 focus:outline-none focus:border-[#a89bff] transition-colors"
+                    >
+                      <option value={0}>Any confidence</option>
+                      <option value={50}>&gt;50% avg conf</option>
+                      <option value={70}>&gt;70% avg conf</option>
+                      <option value={90}>&gt;90% avg conf</option>
+                    </select>
+
+                    <span className="text-[10px] text-[#44445a] ml-auto">
+                      {filteredHistory.length} record{filteredHistory.length !== 1 ? 's' : ''}
+                    </span>
+                    <button
+                      onClick={() => { const next: TestRecord[] = []; saveHistory(next); setHistory(next) }}
+                      className="text-[10px] text-[#55556a] hover:text-red-400 transition-colors px-2 py-1 rounded-[6px] hover:bg-[#1e1e2a]"
+                    >
+                      clear all
+                    </button>
+                  </div>
+
+                  {/* Version comparison table — only when All versions + ≥2 versions with test data */}
+                  {showVersionComparison && (() => {
+                    const versionsWithData = versions.filter(ver => history.some(r => r.versionId === ver.id))
+                    if (versionsWithData.length < 2) return null
+                    return (
+                      <div className="bg-[#0d0d14] rounded-[10px] p-3 space-y-2">
+                        <p className="text-[10px] text-[#55556a] uppercase tracking-wider">Version Comparison (avg confidence)</p>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[10px]">
+                            <thead>
+                              <tr>
+                                <th className="text-left text-[#44445a] pb-2 pr-4">Version</th>
+                                <th className="text-left text-[#44445a] pb-2 pr-3">Tests</th>
+                                {TASK_INFO.map(t => (
+                                  <th key={t.key} className="text-left text-[#44445a] pb-2 pr-3">{t.icon}</th>
                                 ))}
                               </tr>
-                            )
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )
-              })()}
+                            </thead>
+                            <tbody>
+                              {versions.map(ver => {
+                                const vRecs = history.filter(r => r.versionId === ver.id)
+                                if (!vRecs.length) return null
+                                const avgConf = (key: typeof taskKeys[number]) =>
+                                  Math.round(vRecs.reduce((s, r) => s + r.results[key].conf, 0) / vRecs.length)
+                                return (
+                                  <tr key={ver.id} className={cn(ver.id === activeId && 'text-[#a89bff]')}>
+                                    <td className="pr-4 pb-1.5 font-medium">
+                                      {ver.id === activeId && <Star className="w-2.5 h-2.5 inline mr-1" fill="currentColor" />}
+                                      v{ver.versionNum}
+                                    </td>
+                                    <td className="pr-3 pb-1.5 text-[#55556a]">{vRecs.length}</td>
+                                    {taskKeys.map(k => (
+                                      <td key={k} className={cn('pr-3 pb-1.5 font-medium',
+                                        avgConf(k) >= 80 ? 'text-green-400' : avgConf(k) >= 60 ? 'text-yellow-400' : 'text-[#55556a]'
+                                      )}>
+                                        {avgConf(k)}%
+                                      </td>
+                                    ))}
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )
+                  })()}
 
-              {/* Individual records — newest first */}
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                {[...history].reverse().map(rec => (
-                  <div key={rec.id} className="bg-[#1a1a24] rounded-[10px] overflow-hidden">
-                    {rec.thumbnail
-                      ? <img src={rec.thumbnail} alt={rec.filename} className="w-full aspect-video object-cover" />
-                      : <div className="w-full aspect-video bg-[#0d0d14] flex items-center justify-center text-[#44445a] text-[10px]">no thumb</div>
-                    }
-                    <div className="p-2 space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[9px] text-[#a89bff] font-medium">v{rec.versionNum}</span>
-                        <span className="text-[9px] text-[#44445a]">
-                          {new Date(rec.testedAt).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })}
-                        </span>
-                      </div>
-                      <p className="text-[9px] text-[#55556a] truncate">{rec.filename}</p>
-                      <div className="space-y-0.5">
-                        {([
-                          { icon: '📦', label: rec.results.packaging.label, conf: rec.results.packaging.conf,
-                            color: rec.results.packaging.label === 'ok' ? 'text-green-400' : rec.results.packaging.label === 'damaged' ? 'text-red-400' : 'text-yellow-400' },
-                          { icon: '🏷️', label: rec.results.hasLabel.label, conf: rec.results.hasLabel.conf,
-                            color: rec.results.hasLabel.label === 'yes' ? 'text-[#a89bff]' : 'text-[#44445a]' },
-                          { icon: '✋', label: rec.results.hasHand.label, conf: rec.results.hasHand.conf,
-                            color: rec.results.hasHand.label === 'yes' ? 'text-[#a89bff]' : 'text-[#44445a]' },
-                          { icon: '🔍', label: rec.results.object.label.replace(/_/g, ' '), conf: rec.results.object.conf, color: 'text-[#8888a8]' },
-                        ] as const).map(({ icon, label, conf, color }) => (
-                          <div key={icon} className="flex items-center justify-between">
-                            <span className="text-[9px]">{icon} <span className={cn('capitalize', color)}>{label}</span></span>
-                            <span className="text-[9px] text-[#44445a]">{conf}%</span>
+                  {/* History cards grid */}
+                  {filteredHistory.length === 0 ? (
+                    <div className="text-center py-8 text-[#44445a] text-xs">No records match the current filters.</div>
+                  ) : (
+                    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+                      {filteredHistory.map(rec => (
+                        <div key={rec.id} className="bg-[#1a1a24] rounded-[10px] overflow-hidden">
+                          {/* Thumbnail — clickable zoom */}
+                          <div className="relative group cursor-zoom-in" onClick={() => rec.thumbnail && setZoomSrc(rec.thumbnail)}>
+                            {rec.thumbnail
+                              ? <img src={rec.thumbnail} alt={rec.filename} className="w-full aspect-video object-cover" />
+                              : <div className="w-full aspect-video bg-[#0d0d14] flex items-center justify-center text-[#44445a] text-[10px]">no thumb</div>
+                            }
+                            {rec.thumbnail && (
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                                <ZoomIn className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                              </div>
+                            )}
                           </div>
-                        ))}
-                      </div>
+
+                          <div className="p-2 space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] text-[#a89bff] font-medium">v{rec.versionNum}</span>
+                              <span className="text-[9px] text-[#44445a]">
+                                {new Date(rec.testedAt).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })}
+                              </span>
+                            </div>
+                            <p className="text-[9px] text-[#55556a] truncate">{rec.filename}</p>
+                            <div className="space-y-0.5">
+                              {([
+                                { icon: '📦', label: rec.results.packaging.label, conf: rec.results.packaging.conf,
+                                  color: rec.results.packaging.label === 'ok' ? 'text-green-400' : rec.results.packaging.label === 'damaged' ? 'text-red-400' : 'text-yellow-400' },
+                                { icon: '🏷️', label: rec.results.hasLabel.label, conf: rec.results.hasLabel.conf,
+                                  color: rec.results.hasLabel.label === 'yes' ? 'text-[#a89bff]' : 'text-[#44445a]' },
+                                { icon: '✋', label: rec.results.hasHand.label, conf: rec.results.hasHand.conf,
+                                  color: rec.results.hasHand.label === 'yes' ? 'text-[#a89bff]' : 'text-[#44445a]' },
+                                { icon: '🔍', label: rec.results.object.label.replace(/_/g, ' '), conf: rec.results.object.conf, color: 'text-[#8888a8]' },
+                              ] as const).map(({ icon, label, conf, color }) => (
+                                <div key={icon} className="flex items-center justify-between">
+                                  <span className="text-[9px]">{icon} <span className={cn('capitalize', color)}>{label}</span></span>
+                                  <span className="text-[9px] text-[#44445a]">{conf}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  </div>
-                ))}
-              </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   )
 }

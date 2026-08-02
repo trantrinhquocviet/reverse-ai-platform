@@ -173,10 +173,10 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   // Matches: pure numeric ≥10 digits (J&T, GHTK, GHN...) OR alphanumeric ≥6 chars
   const extractCodes = (text: string): string[] => {
     const patterns = [
-      /\b\d{10,}\b/g,                          // pure numeric tracking: 8621062280060
-      /\b[A-Z]{1,4}\d{6,}\b/g,                 // letter prefix + digits: C028Z67, VN123456789
-      /\b[A-Z0-9]{2,}[-_.][A-Z0-9]{4,}\b/g,   // dash/dot separated
-      /\b[A-Z][A-Z0-9]{7,}\b/g,                // starts with letter, 8+ chars
+      /\b\d{10,}\b/g,                           // pure numeric ≥10 digits: 8621062280060
+      /\b[A-Z]{1,4}\d{4,}[A-Z0-9]*\b/g,        // letter prefix + mixed: C028Z67, VN123456789
+      /\b[A-Z0-9]{2,}[-_.][A-Z0-9]{4,}\b/g,    // dash/dot separated
+      /\b[A-Z][A-Z0-9]{5,}\b/g,                 // starts with letter, 6+ total chars
     ]
     const found = new Set<string>()
     for (const pat of patterns) {
