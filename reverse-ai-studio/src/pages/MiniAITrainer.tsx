@@ -1,6 +1,6 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Brain, Database, Play, Download, CheckCircle, Loader2, AlertCircle, BarChart3, Layers } from 'lucide-react'
+import { Brain, Database, Play, Download, CheckCircle, Loader2, AlertCircle, BarChart3, Layers, HardDrive, Trash2, RefreshCw, Star } from 'lucide-react'
 import { supabase } from '@/services/api'
 import { cn } from '@/utils/cn'
 
@@ -21,13 +21,33 @@ type ObjectLabel    = typeof OBJECT_LABELS[number]
 
 interface MultiTaskSample {
   imageUrl: string
-  packaging: PackagingLabel   // Task 1
-  hasLabel:  boolean          // Task 2: shipping_label visible?
-  hasHand:   boolean          // Task 3: hand visible?
-  dominantObject: ObjectLabel // Task 4: most confident detected object
+  packaging: PackagingLabel
+  hasLabel:  boolean
+  hasHand:   boolean
+  dominantObject: ObjectLabel
 }
 
 interface DetectedObject { label: string; confidence: number }
+
+interface ModelVersion {
+  id: string           // e.g. "warehouse-multitask-v3"
+  versionNum: number
+  savedAt: string
+  samples: number
+  finalAccs: number[]  // [packaging, hasLabel, hasHand, object]
+}
+
+const VERSIONS_KEY = 'mini_ai_trainer_versions'
+const ACTIVE_KEY   = 'mini_ai_trainer_active'
+
+function idbKey(id: string) { return `indexeddb://${id}` }
+
+function loadVersions(): ModelVersion[] {
+  try { return JSON.parse(localStorage.getItem(VERSIONS_KEY) ?? '[]') } catch { return [] }
+}
+function saveVersions(vs: ModelVersion[]) {
+  localStorage.setItem(VERSIONS_KEY, JSON.stringify(vs))
+}
 
 function dominantObj(objects: DetectedObject[]): ObjectLabel {
   if (!objects.length) return 'other'
@@ -65,10 +85,20 @@ async function fetchSamples(): Promise<MultiTaskSample[]> {
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
+const TASK_INFO = [
+  { key: 'packaging', label: 'Packaging Status', labels: PACKAGING_LABELS, icon: '📦' },
+  { key: 'hasLabel',  label: 'Shipping Label',   labels: BOOL_LABELS,      icon: '🏷️' },
+  { key: 'hasHand',   label: 'Hand Present',     labels: BOOL_LABELS,      icon: '✋' },
+  { key: 'object',    label: 'Dominant Object',  labels: OBJECT_LABELS,    icon: '🔍' },
+]
+
 export function MiniAITrainer() {
   const [phase, setPhase] = useState<'idle' | 'extracting' | 'training' | 'done' | 'error'>('idle')
   const [progress, setProgress] = useState({ step: '', percent: 0, epoch: 0, losses: [0, 0, 0, 0], accs: [0, 0, 0, 0] })
   const [modelReady, setModelReady] = useState(false)
+  const [versions, setVersions] = useState<ModelVersion[]>(loadVersions)
+  const [activeId, setActiveId] = useState<string | null>(() => localStorage.getItem(ACTIVE_KEY))
+  const [loadingId, setLoadingId] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{
     packaging: { label: string; conf: number }
     hasLabel:  { label: string; conf: number }
@@ -90,6 +120,74 @@ export function MiniAITrainer() {
 
   const canTrain = samples.length >= 6
 
+  // Auto-load active version on mount
+  useEffect(() => {
+    if (!activeId) return
+    const ver = loadVersions().find(v => v.id === activeId)
+    if (!ver) return
+    setLoadingId(activeId)
+    ;(async () => {
+      try {
+        const tf = await loadTF()
+        const mobilenet = await import('@tensorflow-models/mobilenet')
+        const [model, mobileNet] = await Promise.all([
+          tf.loadLayersModel(idbKey(activeId)),
+          mobilenet.load({ version: 2, alpha: 0.5 }),
+        ])
+        modelRef.current = { model, mobileNet }
+        setModelReady(true)
+        setPhase('done')
+      } catch {
+        // stale pointer — remove
+        setVersions(vs => { const next = vs.filter(v => v.id !== activeId); saveVersions(next); return next })
+        localStorage.removeItem(ACTIVE_KEY)
+        setActiveId(null)
+      } finally {
+        setLoadingId(null)
+      }
+    })()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Switch to a stored version ────────────────────────────────────────────
+  const switchVersion = async (ver: ModelVersion) => {
+    if (loadingId) return
+    setLoadingId(ver.id)
+    setTestResult(null); setTestImage(null)
+    try {
+      const tf = await loadTF()
+      const mobilenet = await import('@tensorflow-models/mobilenet')
+      const [model, mobileNet] = await Promise.all([
+        tf.loadLayersModel(idbKey(ver.id)),
+        mobilenet.load({ version: 2, alpha: 0.5 }),
+      ])
+      modelRef.current = { model, mobileNet }
+      setActiveId(ver.id)
+      localStorage.setItem(ACTIVE_KEY, ver.id)
+      setModelReady(true)
+      setPhase('done')
+    } catch {
+      alert('Không load được version này. Có thể đã bị xóa khỏi browser.')
+    } finally {
+      setLoadingId(null)
+    }
+  }
+
+  // ── Delete a stored version ───────────────────────────────────────────────
+  const deleteVersion = async (ver: ModelVersion) => {
+    try {
+      const tf = await loadTF()
+      await tf.io.removeModel(idbKey(ver.id))
+    } catch { /* already gone */ }
+    const next = versions.filter(v => v.id !== ver.id)
+    setVersions(next); saveVersions(next)
+    if (activeId === ver.id) {
+      modelRef.current = null
+      setModelReady(false); setPhase('idle')
+      setTestResult(null); setTestImage(null)
+      setActiveId(null); localStorage.removeItem(ACTIVE_KEY)
+    }
+  }
+
   // ── Training ─────────────────────────────────────────────────────────────
   const startTraining = async () => {
     setPhase('extracting')
@@ -102,7 +200,6 @@ export function MiniAITrainer() {
       setProgress(p => ({ ...p, step: 'Loading MobileNetV2...', percent: 10 }))
       const mobileNet = await mobilenet.load({ version: 2, alpha: 0.5 })
 
-      // Extract MobileNet features
       const features: number[][] = []
       const labels = { packaging: [] as number[], hasLabel: [] as number[], hasHand: [] as number[], object: [] as number[] }
 
@@ -126,7 +223,6 @@ export function MiniAITrainer() {
 
       if (features.length < 4) throw new Error('Không đủ ảnh để train (cần ≥4)')
 
-      // ── Build multi-output functional model ──
       setPhase('training')
       setProgress(p => ({ ...p, step: 'Building multi-task model...', percent: 55 }))
 
@@ -135,7 +231,6 @@ export function MiniAITrainer() {
       const shared1 = tf.layers.dense({ units: 256, activation: 'relu' }).apply(inputLayer) as any
       const dropped = tf.layers.dropout({ rate: 0.3 }).apply(shared1) as any
 
-      // 4 task heads
       const packagingOut = tf.layers.dense({ units: PACKAGING_LABELS.length, activation: 'softmax', name: 'packaging' }).apply(dropped) as any
       const hasLabelOut  = tf.layers.dense({ units: 2, activation: 'softmax', name: 'has_label' }).apply(dropped) as any
       const hasHandOut   = tf.layers.dense({ units: 2, activation: 'softmax', name: 'has_hand' }).apply(dropped) as any
@@ -148,13 +243,13 @@ export function MiniAITrainer() {
         metrics: ['accuracy'],
       })
 
-      // Build label tensors
-      const xs       = tf.tensor2d(features)
+      const xs          = tf.tensor2d(features)
       const ysPackaging = tf.oneHot(tf.tensor1d(labels.packaging, 'int32'), PACKAGING_LABELS.length)
-      const ysLabel  = tf.oneHot(tf.tensor1d(labels.hasLabel, 'int32'), 2)
-      const ysHand   = tf.oneHot(tf.tensor1d(labels.hasHand, 'int32'), 2)
-      const ysObject = tf.oneHot(tf.tensor1d(labels.object, 'int32'), OBJECT_LABELS.length)
+      const ysLabel     = tf.oneHot(tf.tensor1d(labels.hasLabel, 'int32'), 2)
+      const ysHand      = tf.oneHot(tf.tensor1d(labels.hasHand, 'int32'), 2)
+      const ysObject    = tf.oneHot(tf.tensor1d(labels.object, 'int32'), OBJECT_LABELS.length)
 
+      let finalAccs = [0, 0, 0, 0]
       const EPOCHS = 40
       await model.fit(xs, [ysPackaging, ysLabel, ysHand, ysObject], {
         epochs: EPOCHS,
@@ -163,27 +258,50 @@ export function MiniAITrainer() {
         callbacks: {
           onEpochEnd: (epoch, logs) => {
             const get = (key: string) => parseFloat(((logs?.[key] ?? 0) as number).toFixed(4))
+            const accs = [
+              parseFloat(((logs?.['packaging_acc'] ?? 0) as number * 100).toFixed(1)),
+              parseFloat(((logs?.['has_label_acc'] ?? 0) as number * 100).toFixed(1)),
+              parseFloat(((logs?.['has_hand_acc'] ?? 0) as number * 100).toFixed(1)),
+              parseFloat(((logs?.['object_type_acc'] ?? 0) as number * 100).toFixed(1)),
+            ]
+            finalAccs = accs
             setProgress({
               step: `Training epoch ${epoch + 1}/${EPOCHS}`,
               percent: 55 + Math.round(((epoch + 1) / EPOCHS) * 42),
               epoch: epoch + 1,
               losses: [get('packaging_loss'), get('has_label_loss'), get('has_hand_loss'), get('object_type_loss')],
-              accs: [
-                parseFloat(((logs?.['packaging_acc'] ?? 0) as number * 100).toFixed(1)),
-                parseFloat(((logs?.['has_label_acc'] ?? 0) as number * 100).toFixed(1)),
-                parseFloat(((logs?.['has_hand_acc'] ?? 0) as number * 100).toFixed(1)),
-                parseFloat(((logs?.['object_type_acc'] ?? 0) as number * 100).toFixed(1)),
-              ],
+              accs,
             })
           },
         },
       })
 
       xs.dispose(); ysPackaging.dispose(); ysLabel.dispose(); ysHand.dispose(); ysObject.dispose()
+
+      // Save as new version
+      setProgress(p => ({ ...p, step: 'Saving to IndexedDB...', percent: 98 }))
+      const existingVersions = loadVersions()
+      const versionNum = existingVersions.length + 1
+      const newId = `warehouse-multitask-v${versionNum}`
+      await model.save(idbKey(newId))
+
+      const newVer: ModelVersion = {
+        id: newId,
+        versionNum,
+        savedAt: new Date().toISOString(),
+        samples: features.length,
+        finalAccs,
+      }
+      const next = [...existingVersions, newVer]
+      saveVersions(next)
+      setVersions(next)
+      setActiveId(newId)
+      localStorage.setItem(ACTIVE_KEY, newId)
+
       modelRef.current = { model, mobileNet }
       setPhase('done')
       setModelReady(true)
-      setProgress(p => ({ ...p, step: 'Training hoàn tất! 4 tasks learned.', percent: 100 }))
+      setProgress(p => ({ ...p, step: `v${versionNum} saved! 4 tasks learned.`, percent: 100 }))
     } catch (e) {
       setPhase('error')
       setProgress(p => ({ ...p, step: e instanceof Error ? e.message : 'Lỗi không xác định' }))
@@ -224,15 +342,11 @@ export function MiniAITrainer() {
 
   const downloadModel = async () => {
     if (!modelRef.current) return
-    await modelRef.current.model.save('downloads://warehouse-multitask-classifier')
+    const activeVer = versions.find(v => v.id === activeId)
+    await modelRef.current.model.save(`downloads://warehouse-multitask-${activeVer?.id ?? 'model'}`)
   }
 
-  const TASK_INFO = [
-    { key: 'packaging', label: 'Packaging Status', labels: PACKAGING_LABELS, icon: '📦' },
-    { key: 'hasLabel',  label: 'Shipping Label',   labels: BOOL_LABELS,      icon: '🏷️' },
-    { key: 'hasHand',   label: 'Hand Present',      labels: BOOL_LABELS,      icon: '✋' },
-    { key: 'object',    label: 'Dominant Object',   labels: OBJECT_LABELS,    icon: '🔍' },
-  ]
+  const avgAcc = (accs: number[]) => Math.round(accs.reduce((a, b) => a + b, 0) / accs.length)
 
   return (
     <div className="p-6 space-y-5 animate-fade-in">
@@ -295,10 +409,94 @@ export function MiniAITrainer() {
             )}
           </div>
 
+          {/* Saved versions */}
+          {versions.length > 0 && (
+            <div className="rounded-[14px] bg-[#111118] border border-[#1e1e2a] p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <HardDrive className="w-4 h-4 text-[#55556a]" />
+                <h3 className="text-sm font-semibold text-[#f0f0f5]">Saved Versions</h3>
+                <span className="ml-auto text-[10px] text-[#55556a]">{versions.length} version{versions.length > 1 ? 's' : ''}</span>
+              </div>
+              <div className="space-y-2">
+                {[...versions].reverse().map(ver => {
+                  const isActive = ver.id === activeId
+                  const isLoading_ = loadingId === ver.id
+                  return (
+                    <div key={ver.id}
+                      className={cn(
+                        'rounded-[8px] p-2.5 border transition-colors',
+                        isActive
+                          ? 'bg-[#7c6af715] border-[#7c6af740]'
+                          : 'bg-[#1a1a24] border-[#1e1e2a] hover:border-[#2a2a3a]'
+                      )}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-1.5">
+                          {isActive && <Star className="w-3 h-3 text-[#a89bff]" fill="currentColor" />}
+                          <span className={cn('text-xs font-semibold', isActive ? 'text-[#a89bff]' : 'text-[#f0f0f5]')}>
+                            v{ver.versionNum}
+                          </span>
+                          <span className="text-[10px] text-[#44445a]">· {ver.samples} samples</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {!isActive && (
+                            <button
+                              onClick={() => switchVersion(ver)}
+                              disabled={!!loadingId}
+                              className="text-[#55556a] hover:text-[#a89bff] transition-colors disabled:opacity-40"
+                              title="Switch to this version"
+                            >
+                              {isLoading_ ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
+                          <button
+                            onClick={() => deleteVersion(ver)}
+                            disabled={!!loadingId}
+                            className="text-[#55556a] hover:text-red-400 transition-colors disabled:opacity-40"
+                            title="Delete this version"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[9px] text-[#44445a]">
+                          {new Date(ver.savedAt).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })}
+                        </span>
+                        {ver.finalAccs.length > 0 && (
+                          <span className={cn('text-[10px] font-medium', avgAcc(ver.finalAccs) >= 80 ? 'text-green-400' : 'text-yellow-400')}>
+                            avg {avgAcc(ver.finalAccs)}%
+                          </span>
+                        )}
+                      </div>
+                      {ver.finalAccs.length > 0 && (
+                        <div className="mt-1.5 flex gap-1">
+                          {ver.finalAccs.map((acc, i) => (
+                            <div key={i} className="flex-1">
+                              <div className="h-1 rounded-full bg-[#1e1e2a] overflow-hidden">
+                                <div
+                                  className={cn('h-full rounded-full', acc >= 80 ? 'bg-green-500' : acc >= 60 ? 'bg-yellow-500' : 'bg-red-500')}
+                                  style={{ width: `${acc}%` }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Test model */}
           {modelReady && (
             <div className="rounded-[14px] bg-[#111118] border border-[#1e1e2a] p-4 space-y-3">
-              <h3 className="text-sm font-semibold text-[#f0f0f5]">Test Model</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-[#f0f0f5]">Test Model</h3>
+                {activeId && <span className="text-[10px] text-[#a89bff]">v{versions.find(v => v.id === activeId)?.versionNum}</span>}
+              </div>
               <input ref={fileRef} type="file" accept="image/*" className="hidden"
                 onChange={e => e.target.files?.[0] && testFrame(e.target.files[0])} />
               <button
@@ -347,6 +545,11 @@ export function MiniAITrainer() {
           <div className="flex items-center gap-2">
             <BarChart3 className="w-4 h-4 text-[#55556a]" />
             <h3 className="text-sm font-semibold text-[#f0f0f5]">Multi-Task Training</h3>
+            {versions.length > 0 && (
+              <span className="ml-auto text-[10px] text-[#55556a]">
+                Next: <span className="text-[#a89bff]">v{versions.length + 1}</span>
+              </span>
+            )}
           </div>
 
           {/* Architecture */}
@@ -426,26 +629,26 @@ export function MiniAITrainer() {
                 <div className="flex items-center gap-2 bg-[#16a34a20] rounded-[8px] p-3">
                   <CheckCircle className="w-4 h-4 text-green-400" />
                   <p className="text-xs text-green-400">
-                    Xong! Model học được 4 tasks cùng lúc. Test ngay hoặc Download để dùng offline.
+                    Xong! {versions.find(v => v.id === activeId)?.id} đã lưu vào IndexedDB. Train lại để tạo version mới.
                   </p>
                 </div>
               )}
             </div>
           )}
 
-          {(phase === 'idle' || phase === 'error') && (
+          {(phase === 'idle' || phase === 'error' || phase === 'done') && (
             <button
               onClick={startTraining}
-              disabled={!canTrain || isLoading}
+              disabled={!canTrain || isLoading || !!loadingId}
               className={cn(
                 'w-full flex items-center justify-center gap-2 py-3 rounded-[10px] text-sm font-medium transition-colors',
-                canTrain && !isLoading
+                canTrain && !isLoading && !loadingId
                   ? 'bg-[#7c6af7] hover:bg-[#6b5ce7] text-white'
                   : 'bg-[#1e1e2a] text-[#55556a] cursor-not-allowed'
               )}
             >
               <Play className="w-4 h-4" />
-              {phase === 'error' ? 'Thử lại' : 'Train All 4 Tasks'}
+              {phase === 'error' ? 'Thử lại' : versions.length > 0 ? `Train v${versions.length + 1}` : 'Train All 4 Tasks'}
             </button>
           )}
           {(phase === 'extracting' || phase === 'training') && (
