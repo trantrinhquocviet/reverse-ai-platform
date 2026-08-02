@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save, Video, ChevronDown } from 'lucide-react'
 import { cn } from '@/utils/cn'
@@ -33,21 +33,33 @@ interface VideoOption {
 }
 
 async function fetchVideosWithFrames(): Promise<VideoOption[]> {
-  const { data, error } = await supabase
+  // Step 1: get distinct video_ids + counts from dataset_images
+  const { data: imgData, error: imgErr } = await supabase
     .from('dataset_images')
-    .select('video_id, videos(id, name)')
-    .order('created_at', { ascending: false })
-  if (error) throw new Error(error.message)
+    .select('video_id')
+  if (imgErr) throw new Error(imgErr.message)
 
-  const map = new Map<string, { name: string; count: number }>()
-  for (const row of data ?? []) {
-    const vid = row.video_id
-    if (!vid) continue
-    const name = (row as any).videos?.name ?? vid
-    const existing = map.get(vid)
-    map.set(vid, { name, count: (existing?.count ?? 0) + 1 })
+  const countMap = new Map<string, number>()
+  for (const row of imgData ?? []) {
+    if (!row.video_id) continue
+    countMap.set(row.video_id, (countMap.get(row.video_id) ?? 0) + 1)
   }
-  return Array.from(map.entries()).map(([id, { name, count }]) => ({ id, name, frameCount: count }))
+  if (countMap.size === 0) return []
+
+  // Step 2: fetch video names for those IDs
+  const ids = Array.from(countMap.keys())
+  const { data: vidData, error: vidErr } = await supabase
+    .from('videos')
+    .select('id, name')
+    .in('id', ids)
+  if (vidErr) throw new Error(vidErr.message)
+
+  const nameMap = new Map((vidData ?? []).map((v: any) => [v.id, v.name]))
+  return ids.map(id => ({
+    id,
+    name: nameMap.get(id) ?? id,
+    frameCount: countMap.get(id) ?? 0,
+  }))
 }
 
 async function fetchFrames(filterStatus: string, videoId: string): Promise<DatasetFrame[]> {
@@ -341,6 +353,17 @@ export function AnnotationQueue() {
   const [videoDropdownOpen, setVideoDropdownOpen] = useState(false)
   const [reviewerId, setReviewerId] = useState('')
   const queryClient = useQueryClient()
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setVideoDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
 
   // Get current user id on mount
   useState(() => {
@@ -427,7 +450,7 @@ export function AnnotationQueue() {
         </div>
 
         {/* Video filter */}
-        <div className="relative ml-auto">
+        <div className="relative ml-auto" ref={dropdownRef}>
           <button
             onClick={() => setVideoDropdownOpen(v => !v)}
             className="flex items-center gap-2 px-3 py-1.5 rounded-[6px] bg-[#1a1a24] border border-[#2a2a3a] text-xs text-[#f0f0f5] hover:border-[#7c6af740] transition-colors max-w-[200px]"
