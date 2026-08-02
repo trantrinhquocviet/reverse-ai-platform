@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Search, CheckCheck, Cpu, AlertCircle, Eye, Download, Loader2 } from 'lucide-react'
+import { Bell, Search, CheckCheck, Cpu, AlertCircle, Eye, Download, Loader2, X, ChevronRight, ListVideo } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { mockNotifications } from '@/services/mockData'
 import { useProcessing } from '@/contexts/ProcessingContext'
@@ -54,9 +54,19 @@ export function TopBar() {
   const location = useLocation()
   const navigate = useNavigate()
   const crumbs = getBreadcrumb(location.pathname)
-  const { job, queue } = useProcessing()
+  const { job, queue, removeFromQueue, clearQueue } = useProcessing()
 
   const [notifications, setNotifications] = useState<Notification[]>(mockNotifications)
+  const [queueOpen, setQueueOpen] = useState(false)
+  const queueRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (queueRef.current && !queueRef.current.contains(e.target as Node)) setQueueOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -99,31 +109,122 @@ export function TopBar() {
 
       {/* Right actions */}
       <div className="flex items-center gap-2">
-        {/* Processing indicator */}
-        {job && job.status === 'running' && (
-          <button
-            onClick={() => navigate(`/videos/${job.videoId}`)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-[8px] bg-[#7c6af720] border border-[#7c6af740] hover:bg-[#7c6af730] transition-colors"
-          >
-            <Loader2 className="w-3 h-3 text-[#a89bff] animate-spin flex-shrink-0" />
-            <div className="flex flex-col items-start gap-0.5">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-medium text-[#a89bff] leading-none max-w-[120px] truncate">{job.videoName}</span>
-                {queue.length > 0 && (
-                  <span className="text-[9px] text-[#55556a]">+{queue.length} chờ</span>
+        {/* Processing indicator + queue dropdown */}
+        {(job?.status === 'running' || queue.length > 0) && (
+          <div ref={queueRef} className="relative">
+            <button
+              onClick={() => setQueueOpen(v => !v)}
+              className={cn(
+                'flex items-center gap-2 px-3 py-1.5 rounded-[8px] border transition-colors',
+                queueOpen
+                  ? 'bg-[#7c6af730] border-[#7c6af760]'
+                  : 'bg-[#7c6af720] border-[#7c6af740] hover:bg-[#7c6af730]'
+              )}
+            >
+              {job?.status === 'running'
+                ? <Loader2 className="w-3 h-3 text-[#a89bff] animate-spin flex-shrink-0" />
+                : <ListVideo className="w-3 h-3 text-[#a89bff] flex-shrink-0" />}
+              <div className="flex flex-col items-start gap-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-medium text-[#a89bff] leading-none max-w-[120px] truncate">
+                    {job?.status === 'running' ? job.videoName : `${queue.length} in queue`}
+                  </span>
+                  {job?.status === 'running' && queue.length > 0 && (
+                    <span className="text-[9px] text-[#55556a]">+{queue.length}</span>
+                  )}
+                </div>
+                {job?.status === 'running' && (
+                  <div className="flex items-center gap-1">
+                    <div className="w-16 h-0.5 rounded-full bg-[#1e1e2a]">
+                      <div
+                        className="h-0.5 rounded-full bg-[#7c6af7] transition-all duration-300"
+                        style={{ width: `${job.total ? (job.current / job.total) * 100 : 0}%` }}
+                      />
+                    </div>
+                    <span className="text-[9px] text-[#55556a]">{job.current}/{job.total}</span>
+                  </div>
                 )}
               </div>
-              <div className="flex items-center gap-1">
-                <div className="w-16 h-0.5 rounded-full bg-[#1e1e2a]">
-                  <div
-                    className="h-0.5 rounded-full bg-[#7c6af7] transition-all duration-300"
-                    style={{ width: `${job.total ? (job.current / job.total) * 100 : 0}%` }}
-                  />
+            </button>
+
+            {/* Queue dropdown */}
+            {queueOpen && (
+              <div className="absolute right-0 top-full mt-2 w-80 bg-[#0d0d14] border border-[#1e1e2a] rounded-[12px] shadow-2xl z-50 overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e1e2a]">
+                  <span className="text-sm font-semibold text-[#f0f0f5]">Processing Queue</span>
+                  {queue.length > 0 && (
+                    <button
+                      onClick={() => clearQueue()}
+                      className="text-[10px] text-[#55556a] hover:text-[#f87171] transition-colors"
+                    >
+                      Clear queue
+                    </button>
+                  )}
                 </div>
-                <span className="text-[9px] text-[#55556a]">{job.current}/{job.total}</span>
+
+                <div className="max-h-72 overflow-y-auto divide-y divide-[#1e1e2a]">
+                  {/* Currently processing */}
+                  {job?.status === 'running' && (
+                    <div className="px-4 py-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="w-1.5 h-1.5 rounded-full bg-[#7c6af7] animate-pulse" />
+                        <span className="text-[10px] text-[#55556a] font-medium uppercase tracking-wider">Processing now</span>
+                      </div>
+                      <div
+                        className="flex items-center gap-3 cursor-pointer group"
+                        onClick={() => { navigate(`/videos/${job.videoId}`); setQueueOpen(false) }}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-[#f0f0f5] truncate group-hover:text-[#a89bff] transition-colors">{job.videoName}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <div className="flex-1 h-1 rounded-full bg-[#1e1e2a]">
+                              <div
+                                className="h-1 rounded-full bg-[#7c6af7] transition-all duration-300"
+                                style={{ width: `${job.total ? (job.current / job.total) * 100 : 0}%` }}
+                              />
+                            </div>
+                            <span className="text-[10px] text-[#55556a] flex-shrink-0">
+                              {job.current}/{job.total} frames
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-[#55556a] mt-0.5 truncate">{job.message}</p>
+                        </div>
+                        <ChevronRight className="w-3.5 h-3.5 text-[#55556a] group-hover:text-[#a89bff] transition-colors flex-shrink-0" />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Queued videos */}
+                  {queue.length > 0 && (
+                    <div className="px-4 py-2">
+                      <div className="flex items-center gap-2 mb-2 mt-1">
+                        <div className="w-1.5 h-1.5 rounded-full bg-[#55556a]" />
+                        <span className="text-[10px] text-[#55556a] font-medium uppercase tracking-wider">Waiting ({queue.length})</span>
+                      </div>
+                      <div className="space-y-1">
+                        {queue.map((v, i) => (
+                          <div key={v.id} className="flex items-center gap-2 py-1.5 group">
+                            <span className="text-[10px] text-[#44445a] w-4 flex-shrink-0 text-center">{i + 1}</span>
+                            <p className="text-xs text-[#8888a8] truncate flex-1">{v.name}</p>
+                            <button
+                              onClick={() => removeFromQueue(v.id)}
+                              className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-[#55556a] hover:text-[#f87171] transition-all"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {!job && queue.length === 0 && (
+                    <p className="px-4 py-6 text-center text-xs text-[#55556a]">Queue trống</p>
+                  )}
+                </div>
               </div>
-            </div>
-          </button>
+            )}
+          </div>
         )}
         <button className="p-2 rounded-[8px] text-[#55556a] hover:text-[#f0f0f5] hover:bg-[#ffffff08] transition-colors">
           <Search className="w-4 h-4" />
