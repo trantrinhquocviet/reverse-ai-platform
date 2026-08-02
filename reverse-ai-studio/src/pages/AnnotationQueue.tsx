@@ -33,32 +33,23 @@ interface VideoOption {
 }
 
 async function fetchVideosWithFrames(): Promise<VideoOption[]> {
-  // Step 1: get distinct video_ids + counts from dataset_images
-  const { data: imgData, error: imgErr } = await supabase
-    .from('dataset_images')
-    .select('video_id')
-  if (imgErr) throw new Error(imgErr.message)
+  // Fetch all videos + count frames per video in parallel
+  const [vidRes, imgRes] = await Promise.all([
+    supabase.from('videos').select('id, name').order('created_at', { ascending: false }),
+    supabase.from('dataset_images').select('video_id'),
+  ])
+  if (vidRes.error) throw new Error(vidRes.error.message)
 
   const countMap = new Map<string, number>()
-  for (const row of imgData ?? []) {
+  for (const row of imgRes.data ?? []) {
     if (!row.video_id) continue
     countMap.set(row.video_id, (countMap.get(row.video_id) ?? 0) + 1)
   }
-  if (countMap.size === 0) return []
 
-  // Step 2: fetch video names for those IDs
-  const ids = Array.from(countMap.keys())
-  const { data: vidData, error: vidErr } = await supabase
-    .from('videos')
-    .select('id, name')
-    .in('id', ids)
-  if (vidErr) throw new Error(vidErr.message)
-
-  const nameMap = new Map((vidData ?? []).map((v: any) => [v.id, v.name]))
-  return ids.map(id => ({
-    id,
-    name: nameMap.get(id) ?? id,
-    frameCount: countMap.get(id) ?? 0,
+  return (vidRes.data ?? []).map((v: any) => ({
+    id: v.id,
+    name: v.name,
+    frameCount: countMap.get(v.id) ?? 0,
   }))
 }
 
