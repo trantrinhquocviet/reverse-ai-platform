@@ -177,7 +177,7 @@ async def call_vision_ai(image_base64: str, preferred_model: str = "") -> tuple[
                 result = await _call_one_model(image_base64, model, client)
                 return result, model
             except httpx.HTTPStatusError as e:
-                if e.response.status_code in (429, 503, 502):
+                if e.response.status_code in (404, 429, 500, 502, 503):
                     last_error = e
                     continue  # try next model
                 raise
