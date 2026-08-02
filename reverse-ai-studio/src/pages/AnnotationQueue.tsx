@@ -4,7 +4,14 @@ import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Penci
 import { cn } from '@/utils/cn'
 import { supabase } from '@/services/api'
 
+interface DetectedObject {
+  label: string
+  confidence: number
+  region?: string
+}
+
 interface AIResult {
+  objects?: DetectedObject[]
   tracking_codes?: string[]
   barcodes?: string[]
   packaging_status?: 'ok' | 'damaged' | 'unknown'
@@ -12,6 +19,13 @@ interface AIResult {
   label_text?: string[]
   confidence?: number
   notes?: string
+}
+
+const OBJECT_EMOJI: Record<string, string> = {
+  cardboard_box: '📦', shipping_label: '🏷️', barcode_1d: '📊', qr_code: '🔲',
+  hand: '✋', tape_roll: '🧵', barcode_scanner: '📠', label_printer: '🖨️',
+  knife_cutter: '🔪', keyboard: '⌨️', mouse: '🖱️', plastic_bag: '🟢',
+  envelope: '✉️', package: '📦',
 }
 
 interface DatasetFrame {
@@ -297,6 +311,27 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
                   <span className="ml-2 text-[#55556a]">conf: {Math.round(ai.confidence * 100)}%</span>
                 )}
               </p>
+            )}
+
+            {/* Detected objects */}
+            {ai?.objects && ai.objects.length > 0 && (
+              <div>
+                <p className="text-[9px] text-[#55556a] uppercase tracking-wider mb-1">Objects</p>
+                <div className="flex flex-wrap gap-1">
+                  {ai.objects.slice(0, 6).map((obj, i) => (
+                    <span
+                      key={i}
+                      title={`${obj.region ?? ''} · ${Math.round((obj.confidence ?? 0) * 100)}%`}
+                      className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded-[4px] bg-[#ffffff08] text-[9px] text-[#8888a8]"
+                    >
+                      {OBJECT_EMOJI[obj.label] ?? '🔍'} {obj.label.replace(/_/g, ' ')}
+                    </span>
+                  ))}
+                  {ai.objects.length > 6 && (
+                    <span className="text-[9px] text-[#44445a]">+{ai.objects.length - 6}</span>
+                  )}
+                </div>
+              </div>
             )}
 
             {!ai && <p className="text-[10px] text-[#55556a] italic">No AI result</p>}

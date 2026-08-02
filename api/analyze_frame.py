@@ -26,15 +26,25 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 OPENROUTER_MODEL = "nvidia/nemotron-nano-12b-v2-vl:free"
 
-VISION_PROMPT = """You are analyzing a warehouse packing video frame. Detect and extract:
-1. Tracking codes / order codes (e.g. TTK3CE-584361784077026534)
-2. Any visible text on labels or packages (OCR)
-3. Packaging status: "ok", "damaged", or "unknown"
-4. Number of packages visible in frame (integer)
-5. Notes about anything unusual
+VISION_PROMPT = """You are a warehouse AI inspector analyzing a packing/sorting video frame.
+
+Your tasks:
+1. OBJECT DETECTION — identify every visible object and its bounding region (rough %).
+   Common objects: cardboard_box, shipping_label, barcode_1d, qr_code, hand, tape_roll,
+   barcode_scanner, label_printer, knife_cutter, keyboard, mouse, plastic_bag, envelope.
+2. TRACKING CODES — extract all order/tracking numbers from labels (numeric or alphanumeric).
+3. OCR — extract all readable text from labels and packages.
+4. PACKAGING STATUS — "ok", "damaged", or "unknown".
+5. PACKAGE COUNT — how many packages are visible.
 
 Return ONLY valid JSON (no markdown, no code fences):
 {
+  "objects": [
+    {"label": "cardboard_box", "confidence": 0.95, "region": "center"},
+    {"label": "shipping_label", "confidence": 0.92, "region": "center-left"},
+    {"label": "hand", "confidence": 0.98, "region": "bottom-left"},
+    {"label": "barcode_1d", "confidence": 0.90, "region": "center-right"}
+  ],
   "tracking_codes": ["string"],
   "barcodes": [],
   "packaging_status": "ok|damaged|unknown",
@@ -42,7 +52,10 @@ Return ONLY valid JSON (no markdown, no code fences):
   "label_text": ["string"],
   "confidence": 0.0,
   "notes": "string"
-}"""
+}
+
+Region values: top-left, top-center, top-right, center-left, center, center-right, bottom-left, bottom-center, bottom-right.
+Confidence: float 0.0–1.0. Include ALL visible objects even partially visible."""
 
 
 class AnalyzeFrameRequest(BaseModel):
@@ -72,7 +85,7 @@ async def verify_jwt(token: str) -> dict:
 async def call_vision_ai(image_base64: str) -> dict:
     payload = {
         "model": OPENROUTER_MODEL,
-        "max_tokens": 512,
+        "max_tokens": 1024,
         "temperature": 0.1,
         "messages": [
             {
@@ -173,8 +186,9 @@ async def analyze_frame(
     except (json.JSONDecodeError, KeyError):
         # Model returned non-JSON — save with empty result rather than failing
         ai_result = {
-            "tracking_codes": [], "barcodes": [], "packaging_status": "unknown",
-            "package_count": 0, "label_text": [], "confidence": 0.0, "notes": "parse_error"
+            "objects": [], "tracking_codes": [], "barcodes": [],
+            "packaging_status": "unknown", "package_count": 0,
+            "label_text": [], "confidence": 0.0, "notes": "parse_error"
         }
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"OpenRouter API error: {e.response.text}")

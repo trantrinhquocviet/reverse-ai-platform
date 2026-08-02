@@ -10,6 +10,94 @@ import { formatDateTime } from '@/utils/formatters'
 import { useProcessing } from '@/contexts/ProcessingContext'
 import type { LucideIcon } from 'lucide-react'
 
+interface DetectedObject {
+  label: string
+  confidence: number
+  region?: string
+}
+
+interface AiResult {
+  objects?: DetectedObject[]
+  tracking_codes?: string[]
+  barcodes?: string[]
+  packaging_status?: string
+  package_count?: number
+  label_text?: string[]
+  confidence?: number
+  notes?: string
+}
+
+const OBJECT_EMOJI: Record<string, string> = {
+  cardboard_box: '📦', shipping_label: '🏷️', barcode_1d: '📊', qr_code: '🔲',
+  hand: '✋', tape_roll: '🧵', barcode_scanner: '📠', label_printer: '🖨️',
+  knife_cutter: '🔪', keyboard: '⌨️', mouse: '🖱️', plastic_bag: '🟢',
+  envelope: '✉️', package: '📦', default: '🔍',
+}
+
+function FrameResultDetail({ ai }: { ai: AiResult }) {
+  const trackingCodes = ai.tracking_codes?.filter(Boolean) ?? []
+  const barcodes = ai.barcodes?.filter(Boolean) ?? []
+  const objects = ai.objects ?? []
+
+  return (
+    <div className="space-y-2 mt-1">
+      {/* Objects */}
+      {objects.length > 0 && (
+        <div>
+          <p className="text-[9px] text-[#55556a] uppercase tracking-wider mb-1">Detected Objects</p>
+          <div className="flex flex-wrap gap-1">
+            {objects.map((obj, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] bg-[#ffffff08] text-[10px] text-[#f0f0f5]"
+                title={`${obj.region ?? ''} · ${Math.round((obj.confidence ?? 0) * 100)}%`}
+              >
+                <span>{OBJECT_EMOJI[obj.label] ?? OBJECT_EMOJI.default}</span>
+                <span className="text-[#8888a8]">{obj.label.replace(/_/g, ' ')}</span>
+                <span className="text-[#44445a]">{Math.round((obj.confidence ?? 0) * 100)}%</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* Tracking codes */}
+      {trackingCodes.length > 0 && (
+        <div className="bg-[#1a1a24] rounded-[6px] px-2 py-1.5">
+          <p className="text-[9px] text-[#55556a] mb-0.5">Tracking</p>
+          {trackingCodes.map((c, i) => <p key={i} className="text-[10px] text-[#a89bff] font-mono truncate">{c}</p>)}
+        </div>
+      )}
+      {/* Barcodes */}
+      {barcodes.length > 0 && (
+        <div className="bg-[#1a1a24] rounded-[6px] px-2 py-1.5">
+          <p className="text-[9px] text-[#55556a] mb-0.5">Barcode</p>
+          {barcodes.map((c, i) => <p key={i} className="text-[10px] text-[#f0f0f5] font-mono truncate">{c}</p>)}
+        </div>
+      )}
+      {/* Packaging + count */}
+      <div className="flex gap-3 text-[10px]">
+        {ai.packaging_status && (
+          <span>
+            <span className="text-[#55556a]">Packaging: </span>
+            <span className={ai.packaging_status === 'ok' ? 'text-green-400' : ai.packaging_status === 'damaged' ? 'text-red-400' : 'text-yellow-400'}>
+              {ai.packaging_status}
+            </span>
+          </span>
+        )}
+        {ai.package_count !== undefined && (
+          <span className="text-[#55556a]">Packages: <span className="text-[#f0f0f5]">{ai.package_count}</span></span>
+        )}
+        {ai.confidence !== undefined && (
+          <span className="text-[#55556a]">Conf: <span className="text-[#f0f0f5]">{Math.round(ai.confidence * 100)}%</span></span>
+        )}
+      </div>
+      {ai.notes && ai.notes !== 'parse_error' && (
+        <p className="text-[10px] text-[#55556a] italic truncate">{ai.notes}</p>
+      )}
+    </div>
+  )
+}
+
 const aiSections: { type: string; icon: LucideIcon; description: string }[] = [
   { type: 'Tracking Code', icon: ScanLine, description: 'Scan & extract tracking codes from packages' },
   { type: 'Barcode', icon: Barcode, description: 'Detect and decode barcodes in video frames' },
@@ -126,26 +214,7 @@ export function VideoDetail() {
                         : <span className="text-[10px] text-red-400">✗ Lỗi</span>}
                     </div>
                     {r.status === 'ok' && r.aiResult && (
-                      <div className="space-y-1">
-                        {(r.aiResult as unknown as { tracking_codes?: string[]; barcodes?: string[]; packaging_status?: string; package_count?: number; label_text?: string[] }).tracking_codes?.length ? (
-                          <p className="text-[10px] text-[#f0f0f5]">
-                            <span className="text-[#55556a]">Tracking:</span> {(r.aiResult as unknown as { tracking_codes: string[] }).tracking_codes.join(', ')}
-                          </p>
-                        ) : null}
-                        {(r.aiResult as unknown as { packaging_status?: string }).packaging_status && (
-                          <p className="text-[10px] text-[#f0f0f5]">
-                            <span className="text-[#55556a]">Packaging:</span>{' '}
-                            <span className={(r.aiResult as unknown as { packaging_status: string }).packaging_status === 'ok' ? 'text-green-400' : 'text-yellow-400'}>
-                              {(r.aiResult as unknown as { packaging_status: string }).packaging_status}
-                            </span>
-                          </p>
-                        )}
-                        {(r.aiResult as unknown as { package_count?: number }).package_count !== undefined && (
-                          <p className="text-[10px] text-[#f0f0f5]">
-                            <span className="text-[#55556a]">Packages:</span> {(r.aiResult as unknown as { package_count: number }).package_count}
-                          </p>
-                        )}
-                      </div>
+                      <FrameResultDetail ai={r.aiResult as AiResult} />
                     )}
                     {r.status === 'error' && (
                       <p className="text-[10px] text-red-400 truncate">{r.error}</p>
