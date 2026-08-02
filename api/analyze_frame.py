@@ -56,7 +56,6 @@ VISION_MODELS = [
     "moonshotai/kimi-vl-a3b-thinking:free",
     # InternLM
     "internlm/internvl3-14b:free",
-    "internlm/internvl3-2b:free",
 ]
 
 VISION_PROMPT = """You are a warehouse AI inspector. Analyze this video frame and return bounding boxes for every visible object.
