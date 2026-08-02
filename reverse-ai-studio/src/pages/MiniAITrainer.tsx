@@ -15,17 +15,21 @@ async function loadTF() {
 // ── Task definitions ──────────────────────────────────────────────────────────
 const PACKAGING_LABELS = ['ok', 'damaged', 'unknown'] as const
 const BOOL_LABELS      = ['no', 'yes'] as const
-const OBJECT_LABELS    = ['cardboard_box', 'shipping_label', 'barcode_1d', 'qr_code', 'hand', 'barcode_scanner', 'other'] as const
+const DEFAULT_OBJECT_LABELS = ['cardboard_box', 'shipping_label', 'barcode_1d', 'qr_code', 'hand', 'barcode_scanner', 'other'] as const
 
 type PackagingLabel = typeof PACKAGING_LABELS[number]
-type ObjectLabel    = typeof OBJECT_LABELS[number]
 
 interface MultiTaskSample {
   imageUrl: string
   packaging: PackagingLabel
   hasLabel:  boolean
   hasHand:   boolean
-  dominantObject: ObjectLabel
+  dominantObject: string
+}
+
+interface FetchSamplesResult {
+  samples: MultiTaskSample[]
+  objectLabels: string[]  // dynamic labels derived from actual dataset
 }
 
 interface DetectedObject { label: string; confidence: number }
@@ -36,6 +40,7 @@ interface ModelVersion {
   savedAt: string
   samples: number
   finalAccs: number[]  // [packaging, hasLabel, hasHand, object]
+  objectLabels?: string[]  // dynamic labels used in training
 }
 
 const VERSIONS_KEY = 'mini_ai_trainer_versions'
@@ -74,48 +79,56 @@ function saveVersions(vs: ModelVersion[]) {
   localStorage.setItem(VERSIONS_KEY, JSON.stringify(vs))
 }
 
-function dominantObj(objects: DetectedObject[]): ObjectLabel {
+function dominantObjDynamic(objects: DetectedObject[], labels: string[]): string {
   if (!objects.length) return 'other'
   const sorted = [...objects].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
-  const top = sorted[0].label as ObjectLabel
-  return OBJECT_LABELS.includes(top) ? top : 'other'
+  const top = sorted[0].label
+  return labels.includes(top) ? top : 'other'
 }
 
 // ── Data fetching ─────────────────────────────────────────────────────────────
-async function fetchSamples(): Promise<MultiTaskSample[]> {
+async function fetchSamples(): Promise<FetchSamplesResult> {
   const { data, error } = await supabase
     .from('dataset_images')
     .select('file_path, ai_result, annotations(status)')
     .not('ai_result', 'is', null)
   if (error) throw new Error(error.message)
 
-  return (data ?? [])
-    .filter((row: any) => (row.annotations as any[])?.[0]?.status === 'approved')
-    .map((row: any) => {
-      const ai = row.ai_result as {
-        packaging_status?: string
-        objects?: DetectedObject[]
-      }
-      const objects = ai?.objects ?? []
-      const packaging = (PACKAGING_LABELS.includes(ai?.packaging_status as PackagingLabel)
-        ? ai.packaging_status : 'unknown') as PackagingLabel
-      return {
-        imageUrl: row.file_path,
-        packaging,
-        hasLabel:  objects.some(o => o.label === 'shipping_label'),
-        hasHand:   objects.some(o => o.label === 'hand'),
-        dominantObject: dominantObj(objects),
-      }
-    })
+  const approved = (data ?? []).filter((row: any) => (row.annotations as any[])?.[0]?.status === 'approved')
+
+  // Collect all unique object labels from dataset
+  const labelSet = new Set<string>()
+  for (const row of approved) {
+    const objs: DetectedObject[] = (row.ai_result as any)?.objects ?? []
+    for (const o of objs) {
+      if (o.label && o.label !== 'other') labelSet.add(o.label)
+    }
+  }
+  // Build label list: dataset labels + fallback 'other'
+  const objectLabels = labelSet.size > 0
+    ? [...Array.from(labelSet).sort(), 'other']
+    : [...DEFAULT_OBJECT_LABELS]
+
+  const samples: MultiTaskSample[] = approved.map((row: any) => {
+    const ai = row.ai_result as { packaging_status?: string; objects?: DetectedObject[] }
+    const objects = ai?.objects ?? []
+    const packaging = (PACKAGING_LABELS.includes(ai?.packaging_status as PackagingLabel)
+      ? ai.packaging_status : 'unknown') as PackagingLabel
+    const topObj = dominantObjDynamic(objects, objectLabels)
+    return {
+      imageUrl: row.file_path,
+      packaging,
+      hasLabel: objects.some(o => o.label === 'shipping_label'),
+      hasHand:  objects.some(o => o.label === 'hand'),
+      dominantObject: topObj,
+    }
+  })
+
+  return { samples, objectLabels }
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
-const TASK_INFO = [
-  { key: 'packaging', label: 'Packaging Status', labels: PACKAGING_LABELS, icon: '📦' },
-  { key: 'hasLabel',  label: 'Shipping Label',   labels: BOOL_LABELS,      icon: '🏷️' },
-  { key: 'hasHand',   label: 'Hand Present',     labels: BOOL_LABELS,      icon: '✋' },
-  { key: 'object',    label: 'Dominant Object',  labels: OBJECT_LABELS,    icon: '🔍' },
-]
+// TASK_INFO is built dynamically inside the component to reflect dataset labels
 
 // ── Zoom Modal ────────────────────────────────────────────────────────────────
 function ZoomModal({ src, onClose }: { src: string; onClose: () => void }) {
@@ -184,10 +197,19 @@ export function MiniAITrainer() {
   const modelRef = useRef<any>(null)
   const fileRef  = useRef<HTMLInputElement>(null)
 
-  const { data: samples = [], isLoading } = useQuery({
+  const { data: fetchResult, isLoading } = useQuery({
     queryKey: ['training-samples-mt'],
     queryFn: fetchSamples,
   })
+  const samples = fetchResult?.samples ?? []
+  const datasetObjectLabels = fetchResult?.objectLabels ?? [...DEFAULT_OBJECT_LABELS]
+
+  const TASK_INFO = [
+    { key: 'packaging', label: 'Packaging Status', labels: PACKAGING_LABELS,    icon: '📦' },
+    { key: 'hasLabel',  label: 'Shipping Label',   labels: BOOL_LABELS,         icon: '🏷️' },
+    { key: 'hasHand',   label: 'Hand Present',     labels: BOOL_LABELS,         icon: '✋' },
+    { key: 'object',    label: 'Dominant Object',  labels: datasetObjectLabels,  icon: '🔍' },
+  ]
 
   const packagingCounts = PACKAGING_LABELS.reduce((a, l) => {
     a[l] = samples.filter(s => s.packaging === l).length; return a
@@ -323,8 +345,8 @@ export function MiniAITrainer() {
           labels.packaging.push(PACKAGING_LABELS.indexOf(s.packaging))
           labels.hasLabel.push(s.hasLabel ? 1 : 0)
           labels.hasHand.push(s.hasHand ? 1 : 0)
-          labels.object.push(OBJECT_LABELS.indexOf(s.dominantObject) >= 0
-            ? OBJECT_LABELS.indexOf(s.dominantObject) : OBJECT_LABELS.length - 1)
+          const objIdx = datasetObjectLabels.indexOf(s.dominantObject)
+          labels.object.push(objIdx >= 0 ? objIdx : datasetObjectLabels.length - 1)
         } catch { /* skip */ }
         setProgress(p => ({ ...p, step: `Extracting features ${i + 1}/${samples.length}`, percent: 10 + Math.round((i / samples.length) * 45) }))
       }
@@ -342,7 +364,7 @@ export function MiniAITrainer() {
       const packagingOut = tf.layers.dense({ units: PACKAGING_LABELS.length, activation: 'softmax', name: 'packaging' }).apply(dropped) as any
       const hasLabelOut  = tf.layers.dense({ units: 2, activation: 'softmax', name: 'has_label' }).apply(dropped) as any
       const hasHandOut   = tf.layers.dense({ units: 2, activation: 'softmax', name: 'has_hand' }).apply(dropped) as any
-      const objectOut    = tf.layers.dense({ units: OBJECT_LABELS.length, activation: 'softmax', name: 'object_type' }).apply(dropped) as any
+      const objectOut    = tf.layers.dense({ units: datasetObjectLabels.length, activation: 'softmax', name: 'object_type' }).apply(dropped) as any
 
       const model = tf.model({ inputs: inputLayer, outputs: [packagingOut, hasLabelOut, hasHandOut, objectOut] })
       model.compile({
@@ -355,7 +377,7 @@ export function MiniAITrainer() {
       const ysPackaging = tf.oneHot(tf.tensor1d(labels.packaging, 'int32'), PACKAGING_LABELS.length)
       const ysLabel     = tf.oneHot(tf.tensor1d(labels.hasLabel, 'int32'), 2)
       const ysHand      = tf.oneHot(tf.tensor1d(labels.hasHand, 'int32'), 2)
-      const ysObject    = tf.oneHot(tf.tensor1d(labels.object, 'int32'), OBJECT_LABELS.length)
+      const ysObject    = tf.oneHot(tf.tensor1d(labels.object, 'int32'), datasetObjectLabels.length)
 
       let finalAccs = [0, 0, 0, 0]
       const EPOCHS = 40
@@ -398,6 +420,7 @@ export function MiniAITrainer() {
         savedAt: new Date().toISOString(),
         samples: features.length,
         finalAccs,
+        objectLabels: datasetObjectLabels,
       }
       const next = [...existingVersions, newVer]
       saveVersions(next)
@@ -437,11 +460,12 @@ export function MiniAITrainer() {
         const idx = probs.indexOf(Math.max(...probs))
         return { label: labels[idx], conf: Math.round(probs[idx] * 100) }
       }
+      const activeVerLabels = loadVersions().find(v => v.id === activeId)?.objectLabels ?? [...DEFAULT_OBJECT_LABELS]
       const [packaging, hasLabel, hasHand, object] = await Promise.all([
         toResult(preds[0], PACKAGING_LABELS),
         toResult(preds[1], BOOL_LABELS),
         toResult(preds[2], BOOL_LABELS),
-        toResult(preds[3], OBJECT_LABELS),
+        toResult(preds[3], activeVerLabels),
       ])
       input.dispose(); preds.forEach((t: any) => t.dispose())
       const results = { packaging, hasLabel, hasHand, object }
@@ -582,6 +606,18 @@ export function MiniAITrainer() {
                     <span className="text-[#55556a]">Total approved</span>
                     <span className="text-[#a89bff]">{samples.length}</span>
                   </div>
+                  {/* Dynamic object labels from dataset */}
+                  <div className="pt-1 border-t border-[#1e1e2a]">
+                    <p className="text-[9px] text-[#44445a] uppercase tracking-wider mb-1.5">Object classes ({datasetObjectLabels.length})</p>
+                    <div className="flex flex-wrap gap-1">
+                      {datasetObjectLabels.map(l => (
+                        <span key={l} className="text-[9px] px-1.5 py-0.5 rounded-[4px] bg-[#7c6af720] text-[#a89bff] border border-[#7c6af730]">
+                          {l.replace(/_/g, ' ')}
+                          <span className="text-[#55556a] ml-1">{samples.filter(s => s.dominantObject === l).length}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 </div>
                 {!canTrain && (
                   <div className="flex items-start gap-2 bg-[#f59e0b10] rounded-[8px] p-2.5">
@@ -664,6 +700,15 @@ export function MiniAITrainer() {
                                 />
                               </div>
                             </div>
+                          ))}
+                        </div>
+                      )}
+                      {ver.objectLabels && (
+                        <div className="mt-1.5 flex flex-wrap gap-0.5">
+                          {ver.objectLabels.map(l => (
+                            <span key={l} className="text-[8px] px-1 py-0.5 rounded bg-[#1e1e2a] text-[#44445a]">
+                              {l.replace(/_/g, ' ')}
+                            </span>
                           ))}
                         </div>
                       )}
