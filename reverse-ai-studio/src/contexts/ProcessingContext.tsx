@@ -64,6 +64,27 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     return zxingRef.current
   }
 
+  // ── Preprocessing: grayscale + contrast boost → makes text pop for OCR ──
+  const preprocessForOcr = (src: HTMLCanvasElement): HTMLCanvasElement => {
+    const out = document.createElement('canvas')
+    out.width = src.width; out.height = src.height
+    const ctx = out.getContext('2d')!
+    ctx.drawImage(src, 0, 0)
+    const img = ctx.getImageData(0, 0, out.width, out.height)
+    const d = img.data
+    const CONTRAST = 1.6   // >1 increases contrast
+    const BRIGHTNESS = 10  // slight brightness lift
+    for (let i = 0; i < d.length; i += 4) {
+      // Luminance-weighted grayscale
+      const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+      // Contrast + brightness
+      const v = Math.min(255, Math.max(0, (gray - 128) * CONTRAST + 128 + BRIGHTNESS))
+      d[i] = d[i + 1] = d[i + 2] = v
+    }
+    ctx.putImageData(img, 0, 0)
+    return out
+  }
+
   // ── Step 1: extract frame at timestamp → full-res canvas + small thumb canvas ──
   const extractFrame = (
     videoEl: HTMLVideoElement,
@@ -77,16 +98,16 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
           // Full-res canvas (capped at 1280px wide) for OCR + AI
           const w = Math.min(videoEl.videoWidth, 1280)
           const h = Math.round(w * (videoEl.videoHeight / videoEl.videoWidth))
-          const canvas = document.createElement('canvas')
-          canvas.width = w; canvas.height = h
-          canvas.getContext('2d')!.drawImage(videoEl, 0, 0, w, h)
+          const raw = document.createElement('canvas')
+          raw.width = w; raw.height = h
+          raw.getContext('2d')!.drawImage(videoEl, 0, 0, w, h)
 
-          // Tiny thumbnail (64×36) for fast pixel-diff
+          // Tiny thumbnail (64×36) for fast pixel-diff (use raw, not preprocessed)
           const thumb = document.createElement('canvas')
           thumb.width = 64; thumb.height = 36
           thumb.getContext('2d')!.drawImage(videoEl, 0, 0, 64, 36)
 
-          resolve({ canvas, thumb })
+          resolve({ canvas: raw, thumb })
         } catch (e) { reject(e) }
       }
       videoEl.addEventListener('seeked', onSeeked)
@@ -107,17 +128,36 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     return changed / total
   }
 
-  // ── Step 3: quick OCR at 320px width — returns raw text length ──
+  // ── Step 3: quick OCR at 400px — preprocessed for speed ──
   const quickOcr = async (canvas: HTMLCanvasElement): Promise<string> => {
     try {
-      // Downsample to 320px for speed
       const small = document.createElement('canvas')
-      small.width = 320
-      small.height = Math.round(320 * (canvas.height / canvas.width))
+      small.width = 400
+      small.height = Math.round(400 * (canvas.height / canvas.width))
       small.getContext('2d')!.drawImage(canvas, 0, 0, small.width, small.height)
-      const { data } = await Tesseract.recognize(small, 'eng', { logger: () => {} })
+      const preprocessed = preprocessForOcr(small)
+      const { data } = await Tesseract.recognize(preprocessed, 'eng', { logger: () => {} })
       return data.text.trim()
     } catch { return '' }
+  }
+
+  // ── Extract tracking codes from OCR text ──
+  // Matches: pure numeric ≥10 digits (J&T, GHTK, GHN...) OR alphanumeric ≥6 chars
+  const extractCodes = (text: string): string[] => {
+    const patterns = [
+      /\b\d{10,}\b/g,                          // pure numeric tracking: 8621062280060
+      /\b[A-Z]{1,4}\d{6,}\b/g,                 // letter prefix + digits: C028Z67, VN123456789
+      /\b[A-Z0-9]{2,}[-_.][A-Z0-9]{4,}\b/g,   // dash/dot separated
+      /\b[A-Z][A-Z0-9]{7,}\b/g,                // starts with letter, 8+ chars
+    ]
+    const found = new Set<string>()
+    for (const pat of patterns) {
+      for (const m of text.matchAll(pat)) {
+        const code = m[0].replace(/[_.\-]$/,'')
+        if (code.length >= 6) found.add(code)
+      }
+    }
+    return [...found]
   }
 
   // ── Step 4: full OCR + barcode decode on kept frames ──
@@ -132,12 +172,11 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
   const fullOcr = async (canvas: HTMLCanvasElement): Promise<{ text: string; codes: string[] }> => {
     try {
-      const { data } = await Tesseract.recognize(canvas, 'eng', { logger: () => {} })
+      // Run OCR on preprocessed version (grayscale + contrast) for better accuracy
+      const preprocessed = preprocessForOcr(canvas)
+      const { data } = await Tesseract.recognize(preprocessed, 'eng', { logger: () => {} })
       const text = data.text
-      const codes = [...new Set(
-        [...text.matchAll(/[A-Z0-9]{3,}[-]?[A-Z0-9]{6,}/g)]
-          .map(m => m[0]).filter(c => c.length >= 8)
-      )]
+      const codes = extractCodes(text)
       return { text: text.trim(), codes }
     } catch { return { text: '', codes: [] } }
   }
@@ -161,7 +200,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     const SAMPLE_INTERVAL = 2
     const OFFSET = 3
     const MOTION_THRESHOLD = 0.04   // 4% pixels changed → consider it motion
-    const TEXT_MIN_LENGTH = 8       // min chars from quick OCR to proceed
+    const TEXT_MIN_LENGTH = 5       // min chars from quick OCR to proceed (lower after contrast boost)
 
     const duration = videoEl.duration
     const candidates: number[] = []
