@@ -12,7 +12,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { Modal } from '@/components/Modal'
 import { cn } from '@/utils/cn'
 import { formatRelativeTime } from '@/utils/formatters'
-import { useProcessing } from '@/contexts/ProcessingContext'
+import { useProcessing, VISION_MODELS } from '@/contexts/ProcessingContext'
 import type { Video as VideoType } from '@/types'
 
 const ITEMS_PER_PAGE = 6
@@ -608,7 +608,7 @@ function ImportUrlTab({ warehouses, brands, onClose }: { warehouses: string[]; b
   const [importing, setImporting] = useState(false)
   const [addToProcessing, setAddToProcessing] = useState(true)
   const queryClient = useQueryClient()
-  const { addToQueue } = useProcessing()
+  const { addToQueue, preferredModel, setPreferredModel } = useProcessing()
   const templateInputRef = { current: null as HTMLInputElement | null }
 
   const isValidUrl = (v: string) => { try { new URL(v); return true } catch { return false } }
@@ -786,6 +786,21 @@ function ImportUrlTab({ warehouses, brands, onClose }: { warehouses: string[]; b
           <option value="">Select brand...</option>
           {brands.map((b) => <option key={b} value={b}>{b}</option>)}
         </Select>
+      </div>
+
+      {/* Vision AI Model picker */}
+      <div className="space-y-1.5">
+        <p className="text-[10px] text-[#55556a] font-medium uppercase tracking-wider">Vision AI Model</p>
+        <select
+          value={preferredModel}
+          onChange={e => setPreferredModel(e.target.value)}
+          className="w-full bg-[#1a1a24] border border-[#2a2a38] text-[#f0f0f5] text-xs rounded-[8px] px-3 py-2 focus:outline-none focus:border-[#a89bff] transition-colors"
+        >
+          {VISION_MODELS.map((m, i) => (
+            <option key={m.id} value={m.id}>{i + 1}. {m.label}</option>
+          ))}
+        </select>
+        <p className="text-[10px] text-[#44445a]">Preferred model — auto-fallback nếu bị rate-limit</p>
       </div>
 
       {/* Auto-process toggle */}
