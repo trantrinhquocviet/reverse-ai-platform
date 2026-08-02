@@ -1,13 +1,19 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAutoTrain } from '@/hooks/useAutoTrain'
-import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save, Video, ChevronDown } from 'lucide-react'
+import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save, Video, ChevronDown, Square, CheckSquare } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { supabase } from '@/services/api'
 
 interface DetectedObject {
   label: string
   confidence: number
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  type?: string
+  status?: string
   region?: string
 }
 
@@ -20,6 +26,21 @@ interface AIResult {
   label_text?: string[]
   confidence?: number
   notes?: string
+}
+
+const LABEL_PALETTE = [
+  '#60a5fa','#f59e0b','#34d399','#f97316','#a89bff',
+  '#e879f9','#22d3ee','#86efac','#fbbf24','#fb7185',
+]
+const labelColorMap: Record<string, string> = {}
+let _colorIdx = 0
+function getLabelColor(label: string, type?: string) {
+  if (type === 'text') return '#38bdf8'
+  if (!labelColorMap[label]) {
+    labelColorMap[label] = LABEL_PALETTE[_colorIdx % LABEL_PALETTE.length]
+    _colorIdx++
+  }
+  return labelColorMap[label]
 }
 
 const OBJECT_EMOJI: Record<string, string> = {
@@ -101,7 +122,17 @@ async function reviewFrame(
   annotationId: string | null,
   status: 'approved' | 'rejected',
   reviewerId: string,
+  aiResult: AIResult | null,
 ) {
+  // When approving: mark all detected boxes as approved too
+  if (status === 'approved' && aiResult?.objects?.length) {
+    const updatedObjects = aiResult.objects.map(o => ({ ...o, status: 'approved' }))
+    await supabase
+      .from('dataset_images')
+      .update({ ai_result: { ...aiResult, objects: updatedObjects }, annotation_status: 'approved' })
+      .eq('id', frameId)
+  }
+
   if (annotationId) {
     const { error } = await supabase
       .from('annotations')
@@ -117,6 +148,24 @@ async function reviewFrame(
     })
     if (error) throw new Error(error.message)
   }
+}
+
+async function reanalyzeFrame(frame: DatasetFrame, token: string): Promise<void> {
+  const resp = await fetch('/api/analyze_frame', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      image_base64: '',
+      image_url: frame.file_path,
+      video_id: frame.video_id,
+      frame_timestamp: 0,
+      filename: frame.image_name,
+      client_barcodes: [],
+      client_tracking_codes: [],
+      client_label_text: [],
+    }),
+  })
+  if (!resp.ok) throw new Error(`AI error ${resp.status}`)
 }
 
 function StatusBadge({ status }: { status: DatasetFrame['review_status'] }) {
@@ -146,45 +195,92 @@ function PackagingBadge({ status }: { status?: string }) {
   )
 }
 
-function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+function Lightbox({ src, alt, objects, onClose }: {
+  src: string; alt: string; objects?: DetectedObject[]; onClose: () => void
+}) {
+  const [showBoxes, setShowBoxes] = useState(true)
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <button
-        onClick={onClose}
-        className="absolute top-4 right-4 p-2 rounded-full bg-[#ffffff15] hover:bg-[#ffffff25] text-white transition-colors"
-      >
+    <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={onClose}>
+      <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full bg-[#ffffff15] hover:bg-[#ffffff25] text-white transition-colors">
         <X className="w-5 h-5" />
       </button>
-      <img
-        src={src}
-        alt={alt}
-        className="max-w-full max-h-full object-contain rounded-[8px]"
-        onClick={e => e.stopPropagation()}
-      />
+      {objects && objects.some(o => o.x != null) && (
+        <button
+          onClick={e => { e.stopPropagation(); setShowBoxes(v => !v) }}
+          className="absolute bottom-6 right-6 px-3 py-1.5 rounded-lg bg-[#7c6af7] text-white text-xs font-medium"
+        >
+          {showBoxes ? 'Hide boxes' : 'Show boxes'}
+        </button>
+      )}
+      <div className="relative max-w-full max-h-full" onClick={e => e.stopPropagation()}>
+        <img src={src} alt={alt} className="max-w-full max-h-[85vh] object-contain rounded-[8px] block" />
+        {showBoxes && objects && objects.length > 0 && (
+          <svg className="absolute inset-0 w-full h-full pointer-events-none">
+            {objects.map((obj, i) => {
+              if (obj.x == null || obj.y == null || obj.width == null || obj.height == null) return null
+              const color = getLabelColor(obj.label, obj.type)
+              const boxStatus = obj.status ?? 'pending'
+              const strokeColor = boxStatus === 'approved' ? '#4ade80' : boxStatus === 'rejected' ? '#f87171' : color
+              return (
+                <g key={i}>
+                  <rect x={`${obj.x}%`} y={`${obj.y}%`} width={`${obj.width}%`} height={`${obj.height}%`}
+                    fill={`${strokeColor}18`} stroke={strokeColor} strokeWidth={2}
+                    strokeDasharray={obj.type === 'text' ? '6 3' : undefined}
+                    opacity={boxStatus === 'rejected' ? 0.5 : 1} />
+                  <rect x={`${obj.x}%`} y={`${Math.max(obj.y - 4, 0)}%`}
+                    width={`${Math.min(obj.label.length * 1.1 + 2, 22)}%`} height="4%" fill={strokeColor} />
+                  <text x={`${obj.x + 0.6}%`} y={`${Math.max(obj.y - 0.5, 3.5)}%`}
+                    fill="white" fontSize={10} fontFamily="monospace">
+                    {obj.label} {Math.round((obj.confidence ?? 0) * 100)}%
+                  </text>
+                </g>
+              )
+            })}
+          </svg>
+        )}
+      </div>
     </div>
   )
 }
 
-function FrameCard({ frame, reviewerId, onReviewed }: {
+function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
   frame: DatasetFrame
   reviewerId: string
   onReviewed: () => void
+  selected: boolean
+  onSelect: (id: string, checked: boolean) => void
 }) {
   const queryClient = useQueryClient()
   const { incrementCount } = useAutoTrain()
   const [localStatus, setLocalStatus] = useState(frame.review_status)
   const [lightbox, setLightbox] = useState(false)
+  const [showBoxes, setShowBoxes] = useState(true)
   const [editing, setEditing] = useState(false)
   const [editTracking, setEditTracking] = useState((frame.ai_result?.tracking_codes ?? []).join('\n'))
   const [editBarcodes, setEditBarcodes] = useState((frame.ai_result?.barcodes ?? []).join('\n'))
   const [localAi, setLocalAi] = useState(frame.ai_result)
+  const [reanalyzing, setReanalyzing] = useState(false)
+  const [reanalyzeErr, setReanalyzeErr] = useState<string | null>(null)
+
+  const handleReanalyze = useCallback(async () => {
+    if (reanalyzing || !frame.file_path) return
+    setReanalyzing(true)
+    setReanalyzeErr(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('Chưa đăng nhập')
+      await reanalyzeFrame(frame, session.access_token)
+      queryClient.invalidateQueries({ queryKey: ['annotation-frames'] })
+    } catch (e: any) {
+      setReanalyzeErr(e.message ?? 'Lỗi')
+    } finally {
+      setReanalyzing(false)
+    }
+  }, [frame, reanalyzing, queryClient])
 
   const review = useMutation({
     mutationFn: (status: 'approved' | 'rejected') =>
-      reviewFrame(frame.id, frame.annotation_id, status, reviewerId),
+      reviewFrame(frame.id, frame.annotation_id, status, reviewerId, localAi),
     onSuccess: (_, status) => {
       setLocalStatus(status)
       queryClient.invalidateQueries({ queryKey: ['annotation-frames'] })
@@ -218,23 +314,82 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
   return (
     <>
       {lightbox && frame.file_path && (
-        <Lightbox src={frame.file_path} alt={frame.image_name} onClose={() => setLightbox(false)} />
+        <Lightbox src={frame.file_path} alt={frame.image_name} objects={ai?.objects} onClose={() => setLightbox(false)} />
       )}
     <div className="bg-[#0d0d14] border border-[#1e1e2a] rounded-[12px] overflow-hidden hover:border-[#2a2a3a] transition-colors">
       {/* Frame image */}
-      <div
-        className="aspect-video bg-[#1a1a24] overflow-hidden relative group cursor-zoom-in"
-        onClick={() => frame.file_path && setLightbox(true)}
-      >
+      <div className="aspect-video bg-[#1a1a24] overflow-hidden relative group">
         {frame.file_path ? (
-          <img src={frame.file_path} alt={frame.image_name} className="w-full h-full object-cover" />
+          <img
+            src={frame.file_path} alt={frame.image_name}
+            className="w-full h-full object-cover cursor-zoom-in"
+            onClick={() => setLightbox(true)}
+          />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-[#55556a] text-xs">No preview</div>
         )}
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-          <ZoomIn className="w-6 h-6 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-        </div>
-        <div className="absolute top-2 left-2">
+
+        {/* Bounding box SVG overlay */}
+        {showBoxes && ai?.objects && ai.objects.length > 0 && (
+          <svg className="absolute inset-0 w-full h-full pointer-events-none">
+            {ai.objects.map((obj, i) => {
+              if (obj.x == null || obj.y == null || obj.width == null || obj.height == null) return null
+              const color = getLabelColor(obj.label, obj.type)
+              const boxStatus = obj.status ?? 'pending'
+              const strokeColor = boxStatus === 'approved' ? '#4ade80' : boxStatus === 'rejected' ? '#f87171' : color
+              return (
+                <g key={i}>
+                  <rect
+                    x={`${obj.x}%`} y={`${obj.y}%`}
+                    width={`${obj.width}%`} height={`${obj.height}%`}
+                    fill={`${strokeColor}18`}
+                    stroke={strokeColor}
+                    strokeWidth={1.5}
+                    strokeDasharray={obj.type === 'text' ? '5 2' : undefined}
+                    opacity={boxStatus === 'rejected' ? 0.5 : 1}
+                  />
+                  <rect
+                    x={`${obj.x}%`} y={`${Math.max(obj.y - 5, 0)}%`}
+                    width={`${Math.min(obj.label.length * 1.3 + 2, 25)}%`} height="5%"
+                    fill={strokeColor}
+                  />
+                  <text
+                    x={`${obj.x + 0.8}%`} y={`${Math.max(obj.y - 0.8, 4)}%`}
+                    fill="white" fontSize={8} fontFamily="monospace"
+                  >
+                    {obj.label} {Math.round((obj.confidence ?? 0) * 100)}%
+                  </text>
+                </g>
+              )
+            })}
+          </svg>
+        )}
+
+        {/* Toggle boxes button */}
+        {ai?.objects && ai.objects.some(o => o.x != null) && (
+          <button
+            onClick={e => { e.stopPropagation(); setShowBoxes(v => !v) }}
+            className={cn(
+              'absolute bottom-2 right-2 px-1.5 py-0.5 rounded text-[9px] font-medium transition-colors',
+              showBoxes ? 'bg-[#7c6af7] text-white' : 'bg-black/50 text-[#8888a8] hover:text-white'
+            )}
+          >
+            {showBoxes ? 'Hide boxes' : 'Show boxes'}
+          </button>
+        )}
+
+        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors pointer-events-none" />
+        {/* Checkbox */}
+        <button
+          onClick={e => { e.stopPropagation(); onSelect(frame.id, !selected) }}
+          className={cn(
+            'absolute top-2 left-2 w-5 h-5 rounded flex items-center justify-center transition-colors z-10',
+            selected ? 'bg-[#7c6af7] text-white' : 'bg-black/50 text-[#8888a8] hover:text-white'
+          )}
+        >
+          {selected ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+        </button>
+        <div className="absolute top-2 left-8">
           <StatusBadge status={localStatus} />
         </div>
         {ai?.packaging_status && (
@@ -369,6 +524,19 @@ function FrameCard({ frame, reviewerId, onReviewed }: {
             {review.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <XCircle className="w-3 h-3" />}
             Reject
           </button>
+          <button
+            onClick={handleReanalyze}
+            disabled={reanalyzing}
+            title={reanalyzeErr ?? 'Re-analyze bằng AI'}
+            className={cn(
+              'px-2 py-1.5 rounded-[6px] text-xs transition-colors border',
+              reanalyzeErr
+                ? 'bg-[#dc262620] text-[#f87171] border-[#dc262640]'
+                : 'bg-[#7c6af720] text-[#a89bff] border-[#7c6af740] hover:bg-[#7c6af730]'
+            )}
+          >
+            {reanalyzing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+          </button>
         </div>
       </div>
     </div>
@@ -381,8 +549,45 @@ export function AnnotationQueue() {
   const [filterVideo, setFilterVideo] = useState<string>('all')
   const [videoDropdownOpen, setVideoDropdownOpen] = useState(false)
   const [reviewerId, setReviewerId] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkReanalyzing, setBulkReanalyzing] = useState(false)
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
   const queryClient = useQueryClient()
   const dropdownRef = useRef<HTMLDivElement>(null)
+
+  const handleSelect = useCallback((id: string, checked: boolean) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      checked ? next.add(id) : next.delete(id)
+      return next
+    })
+  }, [])
+
+  const handleSelectAll = useCallback((frames: DatasetFrame[]) => {
+    if (selectedIds.size === frames.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(frames.map(f => f.id)))
+    }
+  }, [selectedIds.size])
+
+  const runBulkReanalyze = useCallback(async (targets: DatasetFrame[]) => {
+    if (bulkReanalyzing || targets.length === 0) return
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) return
+    setBulkReanalyzing(true)
+    setBulkProgress({ done: 0, total: targets.length })
+    for (let i = 0; i < targets.length; i++) {
+      try { await reanalyzeFrame(targets[i], session.access_token) } catch {}
+      setBulkProgress({ done: i + 1, total: targets.length })
+      // Small delay to avoid rate limiting
+      if (i < targets.length - 1) await new Promise(r => setTimeout(r, 800))
+    }
+    setBulkReanalyzing(false)
+    setBulkProgress(null)
+    setSelectedIds(new Set())
+    queryClient.invalidateQueries({ queryKey: ['annotation-frames'] })
+  }, [bulkReanalyzing, queryClient])
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -434,12 +639,23 @@ export function AnnotationQueue() {
             </p>
           </div>
         </div>
-        <button
-          onClick={() => refetch()}
-          className="p-2 rounded-[8px] hover:bg-[#ffffff08] text-[#8888a8] transition-colors"
-        >
-          <RefreshCw className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => refetch()}
+            className="p-2 rounded-[8px] hover:bg-[#ffffff08] text-[#8888a8] transition-colors"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => runBulkReanalyze(frames)}
+            disabled={bulkReanalyzing || frames.length === 0}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-[8px] bg-[#7c6af720] text-[#a89bff] border border-[#7c6af740] text-xs font-medium hover:bg-[#7c6af730] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {bulkReanalyzing && bulkProgress
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {bulkProgress.done}/{bulkProgress.total}</>
+              : <><RefreshCw className="w-3.5 h-3.5" /> Re-analyze All</>}
+          </button>
+        </div>
       </div>
 
       {/* Stats bar */}
@@ -523,6 +739,34 @@ export function AnnotationQueue() {
         </div>
       </div>
 
+      {/* Bulk action bar */}
+      {frames.length > 0 && (
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => handleSelectAll(frames)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-[6px] bg-[#1a1a24] text-[#8888a8] hover:text-[#f0f0f5] text-xs transition-colors"
+          >
+            {selectedIds.size === frames.length
+              ? <><CheckSquare className="w-3.5 h-3.5 text-[#a89bff]" /> Deselect All</>
+              : <><Square className="w-3.5 h-3.5" /> Select All</>}
+          </button>
+          {selectedIds.size > 0 && (
+            <button
+              onClick={() => runBulkReanalyze(frames.filter(f => selectedIds.has(f.id)))}
+              disabled={bulkReanalyzing}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[6px] bg-[#7c6af720] text-[#a89bff] border border-[#7c6af740] text-xs font-medium hover:bg-[#7c6af730] disabled:opacity-40 transition-colors"
+            >
+              {bulkReanalyzing
+                ? <><Loader2 className="w-3 h-3 animate-spin" /> {bulkProgress?.done}/{bulkProgress?.total}</>
+                : <><RefreshCw className="w-3 h-3" /> Re-analyze {selectedIds.size} ảnh</>}
+            </button>
+          )}
+          {selectedIds.size > 0 && (
+            <span className="text-xs text-[#55556a]">Đã chọn {selectedIds.size}/{frames.length}</span>
+          )}
+        </div>
+      )}
+
       {/* Grid */}
       {isLoading ? (
         <div className="flex items-center justify-center py-16">
@@ -546,6 +790,8 @@ export function AnnotationQueue() {
               frame={frame}
               reviewerId={reviewerId}
               onReviewed={() => {}}
+              selected={selectedIds.has(frame.id)}
+              onSelect={handleSelect}
             />
           ))}
         </div>
