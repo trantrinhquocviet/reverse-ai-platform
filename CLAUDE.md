@@ -116,6 +116,57 @@ VITE_API_URL=http://localhost:8000/api/v1
 
 ---
 
+## AI Processing Pipeline
+
+Processing runs **entirely client-side** in the browser via `src/contexts/ProcessingContext.tsx`. A hidden `<video>` element in `ProcessingProvider` enables background processing without requiring the user to stay on the VideoDetail page.
+
+### Frame Sampling — 4-Stage Filter
+
+Every candidate frame (sampled every **2 seconds**) passes through 4 stages before being sent to the AI:
+
+```
+Video frames (every 2s, starting at 3s offset)
+  │
+  ▼ Stage 1 — Motion Detection
+  │  Pixel diff on 64×36px thumbnail vs previous frame
+  │  diff < 4% → SKIP (static frame, camera not moving)
+  │
+  ▼ Stage 2 — Text Density (Quick OCR)
+  │  Tesseract at 320px width (fast, low quality)
+  │  text < 8 chars → SKIP (no labels/codes visible)
+  │
+  ▼ Stage 3 — Full Analysis (kept frames only)
+  │  ZXing barcode/QR decode (full resolution)
+  │  Tesseract OCR (full resolution) → extract tracking code patterns
+  │
+  ▼ Stage 4 — AI Analyze via OpenRouter
+     POST /api/analyze_frame with base64 image + client-side results
+     Model: nvidia/nemotron-nano-12b-v2-vl:free (env: OPEN_ROUTE)
+     Saves frame to dataset_images table in Supabase
+```
+
+**Typical reduction**: ~150 candidate frames (5-min video) → ~20 frames sent to AI → ~7× fewer API calls.
+
+**Thresholds** (in `ProcessingContext.tsx`):
+- `SAMPLE_INTERVAL = 2` — seconds between candidates
+- `MOTION_THRESHOLD = 0.04` — 4% pixel change required to keep frame
+- `TEXT_MIN_LENGTH = 8` — minimum OCR chars to proceed to AI
+
+### Processing Queue
+
+- Queue state persisted in `localStorage` (`processing_queue_v1`) — survives page reload.
+- `addToQueue(videos)` accepts `{ id, name, filePath }[]` — queues multiple videos.
+- Auto-processes: when current job finishes, next video in queue starts automatically.
+- TopBar shows live progress + queue count ("+N chờ").
+- From Video Center: click **Select** → check videos → **Process (N)** → adds to queue.
+- From Import URL dialog: toggle "auto add to processing queue" to queue after import.
+
+### Why Not a Cronjob / Server Worker?
+
+Frame extraction uses `HTMLVideoElement.currentTime` + Canvas API — requires a real browser. The `/api/analyze_frame` endpoint (AI call + DB write) runs server-side, but the frame capture step cannot. For a fully headless pipeline, a Puppeteer/Playwright worker would be needed.
+
+---
+
 ## Deployment
 
 - **Frontend**: Deployed to Vercel (`reverse-ai-studio/`). URL: `https://reverse-ai-platform.vercel.app`
