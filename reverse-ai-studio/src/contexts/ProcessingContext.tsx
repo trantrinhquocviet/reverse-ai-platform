@@ -126,9 +126,10 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     return () => { ocrWorkerRef.current?.terminate(); ocrWorkerRef.current = null }
   }, [])
 
-  // ── Preprocessing: downsample to 800px wide + grayscale + contrast boost ──
+  // ── Preprocessing: downsample to 400px wide + grayscale + contrast boost ──
+  // OCR only needs small image to detect text — saved frame stays full-res
   const preprocessForOcr = (src: HTMLCanvasElement): HTMLCanvasElement => {
-    const OCR_WIDTH = 800
+    const OCR_WIDTH = 400
     const scale = Math.min(1, OCR_WIDTH / src.width)
     const out = document.createElement('canvas')
     out.width = Math.round(src.width * scale)
@@ -307,6 +308,57 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     let token = session.access_token
     let tokenFetchedAt = Date.now()
 
+    const uploadFrame = async (
+      ts: number, canvas: HTMLCanvasElement, thumb: HTMLCanvasElement,
+      clientBarcodes: string[], ocrResult: { text: string; codes: string[] },
+    ): Promise<FrameResult> => {
+      kept++
+      lastSavedThumb = thumb
+      setJob(prev => prev ? { ...prev, message: `Found text at ${ts}s — saving frame ${kept}` } : null)
+
+      const filename = `frame_${String(Math.round(ts)).padStart(6, '0')}.jpg`
+      // Full-res JPEG for storage quality — quality 0.92 balances size vs sharpness
+      const base64 = canvas.toDataURL('image/jpeg', 0.92).split(',')[1]
+      const body = JSON.stringify({
+        image_base64: base64, video_id: videoId, frame_timestamp: ts, filename,
+        client_barcodes: clientBarcodes,
+        client_tracking_codes: ocrResult.codes,
+        client_label_text: ocrResult.text ? [ocrResult.text] : [],
+        ocr_only: true,
+      })
+
+      let res: Response | null = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt))
+        res = await fetch('/api/analyze_frame', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body,
+        })
+        if (res.ok || ![502, 504].includes(res.status)) break
+      }
+
+      if (!res!.ok) {
+        const err = await res!.json().catch(() => ({})) as { detail?: string }
+        return { timestamp: ts, status: 'error', error: err.detail ?? `HTTP ${res!.status}` }
+      }
+      const data = await res!.json() as { id: string; file_path?: string; ai_result: Record<string, unknown> }
+      const ai = data.ai_result ?? {}
+      if (!thumbnailUpdated && data.file_path) {
+        thumbnailUpdated = true
+        supabase.from('videos').update({ thumbnail_path: data.file_path }).eq('id', videoId).then(() => {})
+      }
+      return {
+        timestamp: ts, status: 'ok', imageId: data.id,
+        detectedText: (ai.label_text as string[] | undefined) ?? [],
+        detectedBarcodes: (ai.barcodes as string[] | undefined) ?? [],
+        detectedCodes: (ai.tracking_codes as string[] | undefined) ?? [],
+      }
+    }
+
+    // In-flight upload promise — pipeline: OCR current frame while previous upload is in progress
+    let uploadInFlight: Promise<FrameResult> | null = null
+
     for (let i = 0; i < candidates.length; i++) {
       if (cancelRef.current) break
 
@@ -326,12 +378,12 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         const { canvas, thumb } = await extractFrame(videoEl, ts)
 
         // ── Filter 1: edge density (fast — no Tesseract) ──
-        if (!hasEdgeDensity(canvas, EDGE_THRESHOLD)) continue  // no labels/text visible, skip
+        if (!hasEdgeDensity(canvas, EDGE_THRESHOLD)) continue
 
         // ── Filter 2: similarity vs last saved frame ──
         if (lastSavedThumb && pixelDiff(lastSavedThumb, thumb) < SIMILAR_THRESHOLD) continue
 
-        // ── Edge density passed → run full OCR ──
+        // ── OCR runs while previous upload is still in-flight ──
         const [clientBarcodes, ocrResult] = await Promise.all([
           decodeBarcode(canvas),
           fullOcr(canvas),
@@ -340,55 +392,36 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         // Skip frames with no meaningful text
         if (ocrResult.text.length < MIN_TEXT_LENGTH) continue
 
-        // ── Has text + not a duplicate → save frame ──
-        kept++
-        lastSavedThumb = thumb
-        setJob(prev => prev ? { ...prev, message: `Found text at ${ts}s — saving frame ${kept}` } : null)
-
-        const filename = `frame_${String(Math.round(ts)).padStart(6, '0')}.jpg`
-        const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1]
-
-        const body = JSON.stringify({
-          image_base64: base64, video_id: videoId, frame_timestamp: ts, filename,
-          client_barcodes: clientBarcodes,
-          client_tracking_codes: ocrResult.codes,
-          client_label_text: ocrResult.text ? [ocrResult.text] : [],
-          ocr_only: true,
-        })
-
-        // Retry on 502/504 (cold start / transient gateway errors) — max 2 retries
-        let res: Response | null = null
-        for (let attempt = 0; attempt < 3; attempt++) {
-          if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt))
-          res = await fetch('/api/analyze_frame', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body,
-          })
-          if (res.ok || ![502, 504].includes(res.status)) break
+        // ── Await previous upload before starting next (avoid out-of-order results) ──
+        if (uploadInFlight) {
+          const prev = await uploadInFlight
+          results.push(prev)
+          setJob(p => p ? { ...p, results: [...results] } : null)
         }
 
-        if (!res!.ok) {
-          const err = await res!.json().catch(() => ({})) as { detail?: string }
-          results.push({ timestamp: ts, status: 'error', error: err.detail ?? `HTTP ${res!.status}` })
-        } else {
-          const data = await res!.json() as { id: string; file_path?: string; ai_result: Record<string, unknown> }
-          const ai = data.ai_result ?? {}
-          results.push({
-            timestamp: ts, status: 'ok', imageId: data.id,
-            detectedText: (ai.label_text as string[] | undefined) ?? [],
-            detectedBarcodes: (ai.barcodes as string[] | undefined) ?? [],
-            detectedCodes: (ai.tracking_codes as string[] | undefined) ?? [],
-          })
-          if (!thumbnailUpdated && data.file_path) {
-            thumbnailUpdated = true
-            supabase.from('videos').update({ thumbnail_path: data.file_path }).eq('id', videoId).then(() => {})
-          }
-        }
+        // Start upload async — next frame's OCR will run in parallel
+        uploadInFlight = uploadFrame(ts, canvas, thumb, clientBarcodes, ocrResult)
+
       } catch (e) {
+        if (uploadInFlight) {
+          const prev = await uploadInFlight
+          results.push(prev)
+          uploadInFlight = null
+        }
         results.push({ timestamp: ts, status: 'error', error: e instanceof Error ? e.message : 'unknown' })
       }
 
+      setJob(prev => prev ? { ...prev, results: [...results] } : null)
+    }
+
+    // Flush last in-flight upload
+    if (uploadInFlight) {
+      try {
+        const last = await uploadInFlight
+        results.push(last)
+      } catch (e) {
+        results.push({ timestamp: candidates[candidates.length - 1], status: 'error', error: e instanceof Error ? e.message : 'unknown' })
+      }
       setJob(prev => prev ? { ...prev, results: [...results] } : null)
     }
 
