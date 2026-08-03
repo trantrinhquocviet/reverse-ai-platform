@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAutoTrain } from '@/hooks/useAutoTrain'
-import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save, Video, ChevronDown, Square, CheckSquare } from 'lucide-react'
+import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save, Video, ChevronDown, Square, CheckSquare, ScanText } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { supabase } from '@/services/api'
 
@@ -241,6 +241,30 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
   const [editLabelText, setEditLabelText] = useState((frame.ai_result?.label_text ?? []).join('\n'))
   const [localAi, setLocalAi] = useState(frame.ai_result)
   const [reanalyzing, setReanalyzing] = useState(false)
+  const [ocrRunning, setOcrRunning] = useState(false)
+
+  const runOcr = useCallback(async () => {
+    if (!frame.file_path || ocrRunning) return
+    setOcrRunning(true)
+    try {
+      const Tesseract = (await import('tesseract.js')).default
+      const result = await Tesseract.recognize(frame.file_path, 'eng+vie', { logger: () => {} })
+      const words = result.data.words ?? []
+      const texts = words
+        .filter((w: any) => w.confidence >= 40 && w.text.trim().length >= 2)
+        .map((w: any) => w.text.trim())
+      if (texts.length > 0) {
+        setEditLabelText(prev => {
+          const existing = prev.trim()
+          return existing ? existing + '\n' + texts.join(' ') : texts.join(' ')
+        })
+      }
+    } catch {
+      // silent fail
+    } finally {
+      setOcrRunning(false)
+    }
+  }, [frame.file_path, ocrRunning])
 
   // Sync when AI result updates after re-analyze refetch
   useEffect(() => {
@@ -417,7 +441,19 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
               />
             </div>
             <div>
-              <p className="text-[9px] text-[#55556a] mb-1">Detected Text (mỗi dòng 1 đoạn)</p>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[9px] text-[#55556a]">Detected Text (mỗi dòng 1 đoạn)</p>
+                <button
+                  onClick={runOcr}
+                  disabled={ocrRunning}
+                  title="Chạy OCR từ ảnh"
+                  className={cn('flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] transition-colors',
+                    ocrRunning ? 'text-[#55556a] cursor-wait' : 'text-[#38bdf8] hover:bg-[#38bdf820]')}
+                >
+                  {ocrRunning ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <ScanText className="w-2.5 h-2.5" />}
+                  OCR
+                </button>
+              </div>
               <textarea
                 value={editLabelText}
                 onChange={e => setEditLabelText(e.target.value)}
