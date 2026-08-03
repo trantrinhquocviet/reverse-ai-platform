@@ -249,7 +249,7 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
     try {
       const Tesseract = (await import('tesseract.js')).default
       const result = await Tesseract.recognize(frame.file_path, 'eng+vie', { logger: () => {} })
-      const words = result.data.words ?? []
+      const words = (result.data as any).words ?? []
       const texts = words
         .filter((w: any) => w.confidence >= 40 && w.text.trim().length >= 2)
         .map((w: any) => w.text.trim())
