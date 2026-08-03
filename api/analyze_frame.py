@@ -110,10 +110,12 @@ Return ONLY this JSON (no markdown, no explanation, no code block):
 RULES:
 - type = "object" for physical items, "text" for label/barcode/text regions
 - confidence = float 0.0–1.0
-- Include ALL visible objects even if partially cut off
+- ONLY include objects you can CLEARLY see — do NOT hallucinate or guess objects that are not visible
+- If a shipping label / AWB / barcode is NOT visible in the frame, do NOT include it in objects[]
 - Each object gets its OWN unique x,y position
 - label_text: extract EVERY piece of text visible — product names, codes, numbers, addresses, dates
-- checkpoint values: true/false/null only — null means that stage is not visible in this frame"""
+- checkpoint values: true/false/null only — null means that stage is not visible in this frame
+- Set checkpoint to null (not false) when the relevant item simply isn't in frame yet"""
 
 TEXT_ONLY_PROMPT = """You are an OCR assistant. Extract ALL text visible in this image — every word, number, code, date, address, product name, tracking number, barcode value — anything that can be read.
 

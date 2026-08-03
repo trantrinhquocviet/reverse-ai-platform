@@ -804,40 +804,41 @@ export function AnnotationQueue() {
             </div>
           ))}
         </div>
+      )}
 
-        {/* Checkpoint QC stats strip */}
-        {cpStats.some(c => c.total > 0) && (
-          <div className="grid grid-cols-4 gap-2">
-            {cpStats.map(cp => {
-              const passRate = cp.total > 0 ? Math.round(cp.passed / cp.total * 100) : null
-              return (
-                <div key={cp.key} className={cn(
-                  'rounded-[8px] p-2 text-center border',
-                  passRate === null ? 'bg-[#1a1a24] border-[#1e1e2a]' :
-                  passRate >= 90 ? 'bg-[#16a34a10] border-[#16a34a30]' :
-                  passRate >= 70 ? 'bg-[#f59e0b10] border-[#f59e0b30]' :
-                                   'bg-[#dc262610] border-[#dc262630]'
+      {/* Checkpoint QC stats strip */}
+      {cpStats.some(c => c.total > 0) && (
+        <div className="grid grid-cols-4 gap-2">
+          {cpStats.map(cp => {
+            const passRate = cp.total > 0 ? Math.round(cp.passed / cp.total * 100) : null
+            return (
+              <div key={cp.key} className={cn(
+                'rounded-[8px] p-2 text-center border',
+                passRate === null ? 'bg-[#1a1a24] border-[#1e1e2a]' :
+                passRate >= 90 ? 'bg-[#16a34a10] border-[#16a34a30]' :
+                passRate >= 70 ? 'bg-[#f59e0b10] border-[#f59e0b30]' :
+                                 'bg-[#dc262610] border-[#dc262630]'
+              )}>
+                <p className="text-sm">{cp.icon}</p>
+                <p className={cn('text-sm font-bold',
+                  passRate === null ? 'text-[#44445a]' :
+                  passRate >= 90 ? 'text-[#4ade80]' :
+                  passRate >= 70 ? 'text-[#fbbf24]' : 'text-[#f87171]'
                 )}>
-                  <p className="text-sm">{cp.icon}</p>
-                  <p className={cn('text-sm font-bold',
-                    passRate === null ? 'text-[#44445a]' :
-                    passRate >= 90 ? 'text-[#4ade80]' :
-                    passRate >= 70 ? 'text-[#fbbf24]' : 'text-[#f87171]'
-                  )}>
-                    {passRate !== null ? `${passRate}%` : '–'}
-                  </p>
-                  <p className="text-[8px] text-[#55556a]">{cp.label}</p>
-                  {cp.failed > 0 && (
-                    <p className="text-[8px] text-[#f87171]">{cp.failed} fail</p>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
+                  {passRate !== null ? `${passRate}%` : '–'}
+                </p>
+                <p className="text-[8px] text-[#55556a]">{cp.label}</p>
+                {cp.failed > 0 && (
+                  <p className="text-[8px] text-[#f87171]">{cp.failed} fail</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
       )}
 
       {/* Filters */}
+
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <Filter className="w-3.5 h-3.5 text-[#8888a8]" />
