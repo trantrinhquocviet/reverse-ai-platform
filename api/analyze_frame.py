@@ -146,6 +146,7 @@ class AnalyzeFrameRequest(BaseModel):
     client_label_text: list[str] = []
     preferred_model: str = ""
     text_only: bool = False       # skip object detection, extract all visible text only
+    ocr_only: bool = False        # skip AI entirely — save frame with client-side OCR results
 
 # region text → approximate bounding box (fallback for old-format models)
 _REGION_COORDS: dict[str, tuple[float, float, float, float]] = {
@@ -503,24 +504,31 @@ async def analyze_frame(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Cannot load image: {e}")
 
-    # Call vision AI (OpenRouter) with auto-fallback
-    model_used = request.preferred_model or VISION_MODELS[0]
-    parse_error_detail = None
-    try:
-        ai_result, model_used = await call_vision_ai(image_b64, request.preferred_model, request.text_only)
-    except HTTPException:
-        raise
-    except Exception as e:
-        parse_error_detail = str(e)
+    # OCR-only mode: skip AI entirely, build result from client-side OCR data
+    model_used = "ocr_only"
+    if request.ocr_only:
         ai_result = {
-            "objects": [], "tracking_codes": [], "barcodes": [],
+            "objects": [], "tracking_codes": list(request.client_tracking_codes),
+            "barcodes": list(request.client_barcodes),
             "packaging_status": "unknown", "package_count": 0,
-            "label_text": [], "confidence": 0.0, "notes": f"parse_error: {parse_error_detail}",
-            "checkpoint_product_correct": None,
-            "checkpoint_film_wrapped": None,
-            "checkpoint_awb_attached": None,
-            "checkpoint_barcode_readable": None,
+            "label_text": list(request.client_label_text),
+            "confidence": 0.0, "notes": "ocr_only",
         }
+    else:
+        # Call vision AI (OpenRouter) with auto-fallback
+        model_used = request.preferred_model or VISION_MODELS[0]
+        parse_error_detail = None
+        try:
+            ai_result, model_used = await call_vision_ai(image_b64, request.preferred_model, request.text_only)
+        except HTTPException:
+            raise
+        except Exception as e:
+            parse_error_detail = str(e)
+            ai_result = {
+                "objects": [], "tracking_codes": [], "barcodes": [],
+                "packaging_status": "unknown", "package_count": 0,
+                "label_text": [], "confidence": 0.0, "notes": f"parse_error: {parse_error_detail}",
+            }
 
     # Normalize objects array — fix label/confidence field name variations across models
     if isinstance(ai_result.get("objects"), list):
@@ -529,41 +537,19 @@ async def analyze_frame(
         ai_result["objects"] = []
 
     # Merge client-side results (ZXing barcodes + Tesseract OCR tracking codes)
-    barcodes = set(ai_result.get("barcodes") or [])
-    barcodes.update(request.client_barcodes)
-    ai_result["barcodes"] = list(barcodes)
+    # Skip merge in ocr_only mode — data already set from client above
+    if not request.ocr_only:
+        barcodes = set(ai_result.get("barcodes") or [])
+        barcodes.update(request.client_barcodes)
+        ai_result["barcodes"] = list(barcodes)
 
-    tracking = set(ai_result.get("tracking_codes") or [])
-    tracking.update(request.client_tracking_codes)
-    ai_result["tracking_codes"] = list(tracking)
+        tracking = set(ai_result.get("tracking_codes") or [])
+        tracking.update(request.client_tracking_codes)
+        ai_result["tracking_codes"] = list(tracking)
 
-    label_text = list(ai_result.get("label_text") or [])
-    label_text.extend(request.client_label_text)
-    ai_result["label_text"] = label_text[:100]  # higher cap for text_only mode
-
-    # Normalize checkpoint fields — ensure they exist and are bool | None
-    def _to_bool_or_none(val) -> bool | None:
-        if val is True or val is False:
-            return val
-        if isinstance(val, str):
-            return True if val.lower() == 'true' else (False if val.lower() == 'false' else None)
-        return None
-
-    for cp_field in ('checkpoint_product_correct', 'checkpoint_film_wrapped',
-                     'checkpoint_awb_attached', 'checkpoint_barcode_readable'):
-        ai_result[cp_field] = _to_bool_or_none(ai_result.get(cp_field))
-
-    # Auto-derive CP4: if barcode confidence check not done by model, derive from data
-    if ai_result['checkpoint_barcode_readable'] is None:
-        has_barcode_obj = any(
-            o.get('label') in ('barcode_1d', 'qr_code') and float(o.get('confidence', 0)) >= 0.7
-            for o in ai_result.get('objects', [])
-        )
-        has_code = bool(ai_result.get('tracking_codes') or ai_result.get('barcodes'))
-        if has_barcode_obj and has_code:
-            ai_result['checkpoint_barcode_readable'] = True
-        elif has_barcode_obj or has_code:
-            ai_result['checkpoint_barcode_readable'] = False
+        label_text = list(ai_result.get("label_text") or [])
+        label_text.extend(request.client_label_text)
+        ai_result["label_text"] = label_text[:100]
 
     # Upload frame to Supabase Storage (use resolved image_b64, not raw request which may be empty for URL re-analyze)
     try:

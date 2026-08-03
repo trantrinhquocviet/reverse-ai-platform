@@ -791,15 +791,24 @@ function ImportUrlTab({ warehouses, brands, onClose }: { warehouses: string[]; b
       {/* Vision AI Model picker */}
       <div className="space-y-1.5">
         <p className="text-[10px] text-[#55556a] font-medium uppercase tracking-wider">Vision AI Model</p>
-        <select
-          value={preferredModel}
-          onChange={e => setPreferredModel(e.target.value)}
-          className="w-full bg-[#1a1a24] border border-[#2a2a38] text-[#f0f0f5] text-xs rounded-[8px] px-3 py-2 focus:outline-none focus:border-[#a89bff] transition-colors"
-        >
-          {VISION_MODELS.map((m, i) => (
-            <option key={m.id} value={m.id}>{i + 1}. {m.label}</option>
+        <div className="max-h-44 overflow-y-auto rounded-[8px] border border-[#2a2a38] bg-[#111118] space-y-px p-1">
+          {VISION_MODELS.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => setPreferredModel(m.id)}
+              className={cn(
+                'w-full flex items-center justify-between px-2.5 py-1.5 rounded-[6px] text-xs transition-colors text-left',
+                preferredModel === m.id
+                  ? 'bg-[#7c6af720] text-[#a89bff]'
+                  : 'text-[#8888a8] hover:text-[#f0f0f5] hover:bg-[#1e1e2a]'
+              )}
+            >
+              <span className="truncate">{m.label}</span>
+              <span className="text-[10px] text-[#44445a] flex-shrink-0 ml-2">{m.provider}</span>
+            </button>
           ))}
-        </select>
+        </div>
         <p className="text-[10px] text-[#44445a]">Preferred model — auto-fallback nếu bị rate-limit</p>
       </div>
 

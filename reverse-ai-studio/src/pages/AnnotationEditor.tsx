@@ -504,7 +504,7 @@ export function AnnotationEditor() {
     <div className="flex flex-col h-full bg-[#0a0a10] overflow-hidden">
 
       {/* Toolbar */}
-      <div className="flex items-center gap-1 px-4 py-2 border-b border-[#1e1e2a] bg-[#0d0d14] flex-shrink-0">
+      <div className="flex items-center gap-1 px-4 py-2 border-b border-[#1e1e2a] bg-[#0d0d14] flex-shrink-0 overflow-x-auto">
         <button onClick={() => navigate(-1)} className="p-1.5 rounded text-[#55556a] hover:text-[#f0f0f5] hover:bg-[#1e1e2a] mr-2">
           <ArrowLeft className="w-4 h-4" />
         </button>
