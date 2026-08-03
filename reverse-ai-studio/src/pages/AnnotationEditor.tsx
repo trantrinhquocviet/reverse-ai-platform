@@ -512,6 +512,16 @@ export function AnnotationEditor() {
 
         <div className="w-px h-5 bg-[#1e1e2a] mx-1" />
 
+        {/* OCR button — đặt trước để luôn hiển thị */}
+        <button onClick={runOcr} disabled={ocrRunning} title="Chạy OCR — tạo bounding box cho từng vùng text"
+          className={cn('flex items-center gap-1.5 px-2 py-1.5 rounded text-xs transition-colors flex-shrink-0',
+            ocrRunning ? 'bg-[#1e1e2a] text-[#55556a] cursor-wait' : 'text-[#38bdf8] hover:text-[#f0f0f5] hover:bg-[#1e1e2a]')}>
+          {ocrRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ScanText className="w-3.5 h-3.5" />}
+          OCR
+        </button>
+
+        <div className="w-px h-5 bg-[#1e1e2a] mx-1 flex-shrink-0" />
+
         {/* Select tool */}
         <button onClick={() => setActiveTool('select')} title="Select (S)"
           className={cn('flex items-center gap-1.5 px-2 py-1.5 rounded text-xs transition-colors',
@@ -545,14 +555,6 @@ export function AnnotationEditor() {
             ✕ crop
           </button>
         )}
-
-        {/* OCR button */}
-        <button onClick={runOcr} disabled={ocrRunning} title="Chạy OCR — tạo bounding box cho từng vùng text"
-          className={cn('flex items-center gap-1.5 px-2 py-1.5 rounded text-xs transition-colors',
-            ocrRunning ? 'bg-[#1e1e2a] text-[#55556a] cursor-wait' : 'text-[#38bdf8] hover:text-[#f0f0f5] hover:bg-[#1e1e2a]')}>
-          {ocrRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ScanText className="w-3.5 h-3.5" />}
-          OCR
-        </button>
 
         <div className="w-px h-5 bg-[#1e1e2a] mx-1" />
 
