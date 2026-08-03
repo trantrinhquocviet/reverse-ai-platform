@@ -4,7 +4,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft, Square, Type, ZoomIn, ZoomOut, Move, RotateCcw, Sun, Contrast,
   Grid3X3, Undo2, Save, Check, X, Trash2, Loader2, AlertCircle, Crop, RefreshCw,
+  ScanText,
 } from 'lucide-react'
+import { createWorker } from 'tesseract.js'
 import { cn } from '@/utils/cn'
 import { supabase } from '@/services/api'
 
@@ -54,6 +56,10 @@ interface DatasetImageRow {
     package_count?: number
     label_text?: string[]
     notes?: string
+    productCorrect?: boolean | null
+    filmWrapped?: boolean | null
+    awbAttached?: boolean | null
+    barcodeReadable?: boolean | null
   }
   annotation_status?: string
 }
@@ -95,9 +101,12 @@ const STATUS_STYLE: Record<BoxStatus, { border: string; bg: string; badge: strin
 }
 
 const OBJECT_LABELS = [
-  'cardboard_box','shipping_label','barcode_1d','qr_code','hand','tape_roll',
+  // QC packaging objects
+  'product_item','stretch_film','bubble_wrap','awb_label','sku_label','package_surface',
+  // General warehouse
+  'cardboard_box','shipping_label','barcode_1d','qr_code','tape_roll',
   'barcode_scanner','label_printer','knife_cutter','keyboard','mouse','plastic_bag',
-  'envelope','blue_bin','orange_box','label_roll','product',
+  'envelope','blue_bin','orange_box','label_roll','hand',
 ]
 const TEXT_LABELS = ['tracking_code','barcode_text','label_text','ocr_region','date_text']
 
@@ -198,6 +207,8 @@ export function AnnotationEditor() {
   const [textOnly, setTextOnly] = useState(false)
   const [extractedText, setExtractedText] = useState<string[]>([])
   const [reanalyzeError, setReanalyzeError] = useState<string | null>(null)
+  const [ocrRunning, setOcrRunning] = useState(false)
+  const ocrWorkerRef = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null)
 
   const toPercent = useCallback((cx: number, cy: number) => {
     const el = canvasRef.current
@@ -212,6 +223,69 @@ export function AnnotationEditor() {
   const pushUndo = useCallback((next: AnnotationBox[]) => {
     setUndoStack(s => [...s.slice(-20), next])
     setBoxes(next)
+  }, [])
+
+  // ── OCR: load ảnh → Tesseract word-level → tạo bounding box ─────────────────
+  const runOcr = useCallback(async () => {
+    if (!row?.file_path || ocrRunning) return
+    setOcrRunning(true)
+    setReanalyzeError(null)
+    try {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      await new Promise<void>((res, rej) => {
+        img.onload = () => res()
+        img.onerror = () => rej(new Error('Không load được ảnh (CORS)'))
+        img.src = row.file_path
+      })
+
+      const c = document.createElement('canvas')
+      c.width = img.naturalWidth; c.height = img.naturalHeight
+      c.getContext('2d')!.drawImage(img, 0, 0)
+
+      if (!ocrWorkerRef.current) {
+        ocrWorkerRef.current = await createWorker('eng', 1, { logger: () => {} })
+      }
+      const { data } = await ocrWorkerRef.current.recognize(c)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const words: any[] = (data as any).words ?? []
+
+      const newBoxes: AnnotationBox[] = []
+      for (const word of words) {
+        if ((word.confidence ?? 0) < 40 || (word.text ?? '').trim().length < 2) continue
+        const { bbox } = word
+        newBoxes.push({
+          id: `ocr-${Date.now()}-${newBoxes.length}`,
+          label: `ocr: ${word.text.trim()}`,
+          x: (bbox.x0 / img.naturalWidth) * 100,
+          y: (bbox.y0 / img.naturalHeight) * 100,
+          width: ((bbox.x1 - bbox.x0) / img.naturalWidth) * 100,
+          height: ((bbox.y1 - bbox.y0) / img.naturalHeight) * 100,
+          confidence: word.confidence / 100,
+          type: 'text',
+          status: 'pending',
+          source: 'ai',
+          color: '#38bdf8',
+        })
+      }
+
+      if (newBoxes.length === 0) {
+        setReanalyzeError('OCR không tìm thấy text nào trong ảnh')
+        return
+      }
+
+      const existing = boxes.filter(b => !b.id.startsWith('ocr-'))
+      pushUndo([...existing, ...newBoxes])
+      setExtractedText(words.filter((w: any) => w.confidence >= 40).map((w: any) => w.text.trim()))
+    } catch (e) {
+      setReanalyzeError(e instanceof Error ? e.message : 'OCR thất bại')
+    } finally {
+      setOcrRunning(false)
+    }
+  }, [row, ocrRunning, boxes, pushUndo])
+
+  useEffect(() => {
+    return () => { ocrWorkerRef.current?.terminate() }
   }, [])
 
   // ── Re-analyze ───────────────────────────────────────────────────────────────
@@ -472,6 +546,14 @@ export function AnnotationEditor() {
           </button>
         )}
 
+        {/* OCR button */}
+        <button onClick={runOcr} disabled={ocrRunning} title="Chạy OCR — tạo bounding box cho từng vùng text"
+          className={cn('flex items-center gap-1.5 px-2 py-1.5 rounded text-xs transition-colors',
+            ocrRunning ? 'bg-[#1e1e2a] text-[#55556a] cursor-wait' : 'text-[#38bdf8] hover:text-[#f0f0f5] hover:bg-[#1e1e2a]')}>
+          {ocrRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ScanText className="w-3.5 h-3.5" />}
+          OCR
+        </button>
+
         <div className="w-px h-5 bg-[#1e1e2a] mx-1" />
 
         {[
@@ -725,6 +807,37 @@ export function AnnotationEditor() {
               </div>
             )}
           </div>
+
+          {/* Checkpoint verdict panel */}
+          {(row.ai_result?.productCorrect !== undefined ||
+            row.ai_result?.filmWrapped !== undefined ||
+            row.ai_result?.awbAttached !== undefined ||
+            row.ai_result?.barcodeReadable !== undefined) && (
+            <div className="p-4 border-b border-[#1e1e2a]">
+              <p className="text-[10px] text-[#55556a] uppercase tracking-wider mb-3">Packaging QC</p>
+              <div className="space-y-2">
+                {([
+                  ['CP1', 'Đúng sản phẩm', row.ai_result?.productCorrect],
+                  ['CP2', 'Quấn film', row.ai_result?.filmWrapped],
+                  ['CP3', 'AWB đính', row.ai_result?.awbAttached],
+                  ['CP4', 'Mã quét được', row.ai_result?.barcodeReadable],
+                ] as [string, string, boolean | null | undefined][]).map(([cp, label, val]) => (
+                  <div key={cp} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono text-[#55556a] w-7">{cp}</span>
+                      <span className="text-xs text-[#8888a8]">{label}</span>
+                    </div>
+                    <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-medium',
+                      val === true  ? 'bg-[#4ade8020] text-[#4ade80]' :
+                      val === false ? 'bg-[#f8717120] text-[#f87171]' :
+                                     'bg-[#ffffff08] text-[#55556a]')}>
+                      {val === true ? '✓ Pass' : val === false ? '✗ Fail' : '— N/A'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* AI metadata */}
           <div className="p-4 border-b border-[#1e1e2a]">
