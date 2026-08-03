@@ -3,21 +3,14 @@ import Tesseract from 'tesseract.js'
 import { BrowserMultiFormatReader } from '@zxing/library'
 import { supabase } from '@/services/api'
 
-export interface FrameCheckpoints {
-  productCorrect:  boolean | null
-  filmWrapped:     boolean | null
-  awbAttached:     boolean | null
-  barcodeReadable: boolean | null
-}
-
 export interface FrameResult {
   timestamp: number
   status: 'ok' | 'error'
   imageId?: string
   error?: string
-  aiResult?: Record<string, unknown>
-  modelUsed?: string
-  checkpoints?: FrameCheckpoints
+  detectedText?: string[]
+  detectedBarcodes?: string[]
+  detectedCodes?: string[]
 }
 
 export interface ProcessingJob {
@@ -269,11 +262,11 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
       })
     }
 
-    // Sample every 2s starting at 3s offset
+    // Sample every 2s
     const SAMPLE_INTERVAL = 2
     const OFFSET = 0
-    const MOTION_THRESHOLD = 0.04   // 4% pixels changed → consider it motion
-    const EDGE_THRESHOLD = 0.04     // 4% edge pixels — lowered to keep more frames with labels/hands
+    const EDGE_THRESHOLD = 0.04     // 4% edge pixels — fast pre-filter before OCR
+    const MIN_TEXT_LENGTH = 15      // minimum OCR chars to keep frame
 
     const duration = videoEl.duration
     const candidates: number[] = []
@@ -281,8 +274,10 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
       candidates.push(parseFloat(t.toFixed(1)))
     if (candidates.length === 0) candidates.push(Math.min(OFFSET, duration - 1))
 
+    const SIMILAR_THRESHOLD = 0.03  // < 3% pixel diff vs last saved frame → skip duplicate
+
     const results: FrameResult[] = []
-    let prevThumb: HTMLCanvasElement | null = null
+    let lastSavedThumb: HTMLCanvasElement | null = null
     let thumbnailUpdated = false
     let kept = 0
 
@@ -309,33 +304,34 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
       setJob(prev => prev ? {
         ...prev, current: i + 1,
-        message: `Scanning ${i + 1}/${candidates.length} — ${kept} frames kept`,
+        message: `OCR scanning ${i + 1}/${candidates.length} — ${kept} frames with text`,
       } : null)
 
       try {
         const { canvas, thumb } = await extractFrame(videoEl, ts)
 
-        // ── Filter 1: motion detection ──
-        if (prevThumb) {
-          const diff = pixelDiff(prevThumb, thumb)
-          if (diff < MOTION_THRESHOLD) continue   // static frame, skip
-        }
-        prevThumb = thumb
-
-        // ── Filter 2: edge density (fast — no Tesseract) ──
+        // ── Filter 1: edge density (fast — no Tesseract) ──
         if (!hasEdgeDensity(canvas, EDGE_THRESHOLD)) continue  // no labels/text visible, skip
 
-        // ── Passed both filters → full analysis ──
-        kept++
-        setJob(prev => prev ? { ...prev, message: `Analyzing frame at ${ts}s...` } : null)
+        // ── Filter 2: similarity vs last saved frame ──
+        if (lastSavedThumb && pixelDiff(lastSavedThumb, thumb) < SIMILAR_THRESHOLD) continue
 
-        const filename = `frame_${String(Math.round(ts)).padStart(6, '0')}.jpg`
-        const base64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1]
-
+        // ── Edge density passed → run full OCR ──
         const [clientBarcodes, ocrResult] = await Promise.all([
           decodeBarcode(canvas),
           fullOcr(canvas),
         ])
+
+        // Skip frames with no meaningful text
+        if (ocrResult.text.length < MIN_TEXT_LENGTH) continue
+
+        // ── Has text + not a duplicate → save frame ──
+        kept++
+        lastSavedThumb = thumb
+        setJob(prev => prev ? { ...prev, message: `Found text at ${ts}s — saving frame ${kept}` } : null)
+
+        const filename = `frame_${String(Math.round(ts)).padStart(6, '0')}.jpg`
+        const base64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1]
 
         const res = await fetch('/api/analyze_frame', {
           method: 'POST',
@@ -345,7 +341,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
             client_barcodes: clientBarcodes,
             client_tracking_codes: ocrResult.codes,
             client_label_text: ocrResult.text ? [ocrResult.text] : [],
-            preferred_model: preferredModel,
+            ocr_only: true,
           }),
         })
 
@@ -353,16 +349,14 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
           const err = await res.json().catch(() => ({})) as { detail?: string }
           results.push({ timestamp: ts, status: 'error', error: err.detail ?? `HTTP ${res.status}` })
         } else {
-          const data = await res.json() as { id: string; file_path?: string; ai_result: Record<string, unknown>; model_used?: string }
+          const data = await res.json() as { id: string; file_path?: string; ai_result: Record<string, unknown> }
           const ai = data.ai_result ?? {}
-          const checkpoints: FrameCheckpoints = {
-            productCorrect:  (ai.checkpoint_product_correct  as boolean | null) ?? null,
-            filmWrapped:     (ai.checkpoint_film_wrapped      as boolean | null) ?? null,
-            awbAttached:     (ai.checkpoint_awb_attached      as boolean | null) ?? null,
-            barcodeReadable: (ai.checkpoint_barcode_readable  as boolean | null) ?? null,
-          }
-          results.push({ timestamp: ts, status: 'ok', imageId: data.id, aiResult: ai, modelUsed: data.model_used, checkpoints })
-          // Use first saved frame as video thumbnail
+          results.push({
+            timestamp: ts, status: 'ok', imageId: data.id,
+            detectedText: (ai.label_text as string[] | undefined) ?? [],
+            detectedBarcodes: (ai.barcodes as string[] | undefined) ?? [],
+            detectedCodes: (ai.tracking_codes as string[] | undefined) ?? [],
+          })
           if (!thumbnailUpdated && data.file_path) {
             thumbnailUpdated = true
             supabase.from('videos').update({ thumbnail_path: data.file_path }).eq('id', videoId).then(() => {})
