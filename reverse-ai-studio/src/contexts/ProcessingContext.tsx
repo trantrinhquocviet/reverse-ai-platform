@@ -346,25 +346,33 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         setJob(prev => prev ? { ...prev, message: `Found text at ${ts}s — saving frame ${kept}` } : null)
 
         const filename = `frame_${String(Math.round(ts)).padStart(6, '0')}.jpg`
-        const base64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1]
+        const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1]
 
-        const res = await fetch('/api/analyze_frame', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            image_base64: base64, video_id: videoId, frame_timestamp: ts, filename,
-            client_barcodes: clientBarcodes,
-            client_tracking_codes: ocrResult.codes,
-            client_label_text: ocrResult.text ? [ocrResult.text] : [],
-            ocr_only: true,
-          }),
+        const body = JSON.stringify({
+          image_base64: base64, video_id: videoId, frame_timestamp: ts, filename,
+          client_barcodes: clientBarcodes,
+          client_tracking_codes: ocrResult.codes,
+          client_label_text: ocrResult.text ? [ocrResult.text] : [],
+          ocr_only: true,
         })
 
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({})) as { detail?: string }
-          results.push({ timestamp: ts, status: 'error', error: err.detail ?? `HTTP ${res.status}` })
+        // Retry on 502/504 (cold start / transient gateway errors) — max 2 retries
+        let res: Response | null = null
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt))
+          res = await fetch('/api/analyze_frame', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body,
+          })
+          if (res.ok || ![502, 504].includes(res.status)) break
+        }
+
+        if (!res!.ok) {
+          const err = await res!.json().catch(() => ({})) as { detail?: string }
+          results.push({ timestamp: ts, status: 'error', error: err.detail ?? `HTTP ${res!.status}` })
         } else {
-          const data = await res.json() as { id: string; file_path?: string; ai_result: Record<string, unknown> }
+          const data = await res!.json() as { id: string; file_path?: string; ai_result: Record<string, unknown> }
           const ai = data.ai_result ?? {}
           results.push({
             timestamp: ts, status: 'ok', imageId: data.id,
