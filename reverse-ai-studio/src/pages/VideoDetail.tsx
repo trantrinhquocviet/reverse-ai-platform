@@ -213,8 +213,8 @@ export function VideoDetail() {
                         ? <span className="text-[10px] text-green-400">✓ OK</span>
                         : <span className="text-[10px] text-red-400">✗ Lỗi</span>}
                     </div>
-                    {r.status === 'ok' && r.aiResult && (
-                      <FrameResultDetail ai={r.aiResult as AiResult} />
+                    {r.status === 'ok' && r.detectedText && r.detectedText.length > 0 && (
+                      <p className="text-[10px] text-gray-400 truncate">{r.detectedText.join(', ')}</p>
                     )}
                     {r.status === 'error' && (
                       <p className="text-[10px] text-red-400 truncate">{r.error}</p>

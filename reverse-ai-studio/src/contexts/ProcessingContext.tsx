@@ -1,5 +1,5 @@
 import { createContext, useContext, useRef, useState, useCallback, useEffect, type ReactNode } from 'react'
-import Tesseract from 'tesseract.js'
+import { createWorker, type Worker as TesseractWorker } from 'tesseract.js'
 import { BrowserMultiFormatReader } from '@zxing/library'
 import { supabase } from '@/services/api'
 
@@ -106,26 +106,41 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   const cancelRef = useRef(false)
   const hiddenVideoRef = useRef<HTMLVideoElement | null>(null)
   const zxingRef = useRef<BrowserMultiFormatReader | null>(null)
+  const ocrWorkerRef = useRef<TesseractWorker | null>(null)
 
   const getZxing = () => {
     if (!zxingRef.current) zxingRef.current = new BrowserMultiFormatReader()
     return zxingRef.current
   }
 
-  // ── Preprocessing: grayscale + contrast boost → makes text pop for OCR ──
+  const getOcrWorker = async (): Promise<Tesseract.Worker> => {
+    if (!ocrWorkerRef.current) {
+      const w = await createWorker('eng', 1, { logger: () => {} })
+      ocrWorkerRef.current = w
+    }
+    return ocrWorkerRef.current
+  }
+
+  // Cleanup OCR worker on unmount
+  useEffect(() => {
+    return () => { ocrWorkerRef.current?.terminate(); ocrWorkerRef.current = null }
+  }, [])
+
+  // ── Preprocessing: downsample to 800px wide + grayscale + contrast boost ──
   const preprocessForOcr = (src: HTMLCanvasElement): HTMLCanvasElement => {
+    const OCR_WIDTH = 800
+    const scale = Math.min(1, OCR_WIDTH / src.width)
     const out = document.createElement('canvas')
-    out.width = src.width; out.height = src.height
+    out.width = Math.round(src.width * scale)
+    out.height = Math.round(src.height * scale)
     const ctx = out.getContext('2d')!
-    ctx.drawImage(src, 0, 0)
+    ctx.drawImage(src, 0, 0, out.width, out.height)
     const img = ctx.getImageData(0, 0, out.width, out.height)
     const d = img.data
-    const CONTRAST = 1.6   // >1 increases contrast
-    const BRIGHTNESS = 10  // slight brightness lift
+    const CONTRAST = 1.6
+    const BRIGHTNESS = 10
     for (let i = 0; i < d.length; i += 4) {
-      // Luminance-weighted grayscale
       const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
-      // Contrast + brightness
       const v = Math.min(255, Math.max(0, (gray - 128) * CONTRAST + 128 + BRIGHTNESS))
       d[i] = d[i + 1] = d[i + 2] = v
     }
@@ -229,9 +244,9 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
   const fullOcr = async (canvas: HTMLCanvasElement): Promise<{ text: string; codes: string[] }> => {
     try {
-      // Run OCR on preprocessed version (grayscale + contrast) for better accuracy
       const preprocessed = preprocessForOcr(canvas)
-      const { data } = await Tesseract.recognize(preprocessed, 'eng', { logger: () => {} })
+      const worker = await getOcrWorker()
+      const { data } = await worker.recognize(preprocessed)
       const text = data.text
       const codes = extractCodes(text)
       return { text: text.trim(), codes }
