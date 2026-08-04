@@ -247,8 +247,34 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
     if (!frame.file_path || ocrRunning) return
     setOcrRunning(true)
     try {
+      // Preprocess: load image → canvas → grayscale + contrast + threshold
+      const preprocessed = await new Promise<string>((resolve, reject) => {
+        const img = new Image()
+        img.crossOrigin = 'anonymous'
+        img.onload = () => {
+          const canvas = document.createElement('canvas')
+          canvas.width = img.naturalWidth
+          canvas.height = img.naturalHeight
+          const ctx = canvas.getContext('2d')!
+          ctx.drawImage(img, 0, 0)
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+          const d = imageData.data
+          for (let i = 0; i < d.length; i += 4) {
+            // Grayscale
+            const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+            // Contrast stretch + threshold at 128
+            const val = gray > 128 ? 255 : 0
+            d[i] = d[i + 1] = d[i + 2] = val
+          }
+          ctx.putImageData(imageData, 0, 0)
+          resolve(canvas.toDataURL('image/png'))
+        }
+        img.onerror = reject
+        img.src = frame.file_path!
+      })
+
       const Tesseract = (await import('tesseract.js')).default
-      const result = await Tesseract.recognize(frame.file_path, 'eng+vie', { logger: () => {} })
+      const result = await Tesseract.recognize(preprocessed, 'eng+vie', { logger: () => {} })
       const words = (result.data as any).words ?? []
       const texts = words
         .filter((w: any) => w.confidence >= 40 && w.text.trim().length >= 2)
