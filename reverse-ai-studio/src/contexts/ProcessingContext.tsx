@@ -115,7 +115,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
   const getOcrWorker = async (): Promise<Tesseract.Worker> => {
     if (!ocrWorkerRef.current) {
-      const w = await createWorker('eng', 1, { logger: () => {} })
+      const w = await createWorker('eng+vie', 1, { logger: () => {} })
       ocrWorkerRef.current = w
     }
     return ocrWorkerRef.current
@@ -126,26 +126,39 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     return () => { ocrWorkerRef.current?.terminate(); ocrWorkerRef.current = null }
   }, [])
 
-  // ── Preprocessing: downsample to 400px wide + grayscale + contrast boost ──
-  // OCR only needs small image to detect text — saved frame stays full-res
+  // ── Preprocessing: scale to ≥600px wide + grayscale + adaptive threshold ──
+  // Upscaling small frames improves Tesseract accuracy significantly.
+  // Adaptive threshold (mean-based) handles uneven lighting better than fixed 128.
   const preprocessForOcr = (src: HTMLCanvasElement): HTMLCanvasElement => {
-    const OCR_WIDTH = 400
-    const scale = Math.min(1, OCR_WIDTH / src.width)
+    const OCR_MIN_WIDTH = 600
+    const scale = Math.max(1, OCR_MIN_WIDTH / src.width)
     const out = document.createElement('canvas')
     out.width = Math.round(src.width * scale)
     out.height = Math.round(src.height * scale)
     const ctx = out.getContext('2d')!
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
     ctx.drawImage(src, 0, 0, out.width, out.height)
-    const img = ctx.getImageData(0, 0, out.width, out.height)
-    const d = img.data
-    const CONTRAST = 1.6
-    const BRIGHTNESS = 10
+    const imgData = ctx.getImageData(0, 0, out.width, out.height)
+    const d = imgData.data
+    // Convert to grayscale and compute mean luminance for adaptive threshold
+    const grays = new Uint8Array(d.length / 4)
+    let sum = 0
     for (let i = 0; i < d.length; i += 4) {
-      const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
-      const v = Math.min(255, Math.max(0, (gray - 128) * CONTRAST + 128 + BRIGHTNESS))
-      d[i] = d[i + 1] = d[i + 2] = v
+      const g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2])
+      grays[i >> 2] = g
+      sum += g
     }
-    ctx.putImageData(img, 0, 0)
+    const mean = sum / grays.length
+    // Adaptive threshold: pixels above mean+offset → white, else → black
+    const OFFSET = 10
+    const thresh = Math.min(220, Math.max(80, mean + OFFSET))
+    for (let i = 0; i < d.length; i += 4) {
+      const v = grays[i >> 2] >= thresh ? 255 : 0
+      d[i] = d[i + 1] = d[i + 2] = v
+      d[i + 3] = 255
+    }
+    ctx.putImageData(imgData, 0, 0)
     return out
   }
 
@@ -215,18 +228,23 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   }
 
   // ── Extract tracking codes from OCR text ──
-  // Matches: pure numeric ≥10 digits (J&T, GHTK, GHN...) OR alphanumeric ≥6 chars
+  // Matches VN shipping carriers: J&T (numeric 12-13d), GHN (GHNXXX), GHTK (numeric 9-12d),
+  // Viettel Post (VTPxxx), VNPost (numeric 11d), Shopee Express (SPXxxx)
   const extractCodes = (text: string): string[] => {
     const patterns = [
-      /\b\d{10,}\b/g,                           // pure numeric ≥10 digits: 8621062280060
-      /\b[A-Z]{1,4}\d{4,}[A-Z0-9]*\b/g,        // letter prefix + mixed: C028Z67, VN123456789
-      /\b[A-Z0-9]{2,}[-_.][A-Z0-9]{4,}\b/g,    // dash/dot separated
-      /\b[A-Z][A-Z0-9]{5,}\b/g,                 // starts with letter, 6+ total chars
+      /\b\d{9,15}\b/g,                              // pure numeric 9-15 digits (GHN, J&T, GHTK, VNPost)
+      /\bGHN[A-Z0-9]{5,}\b/gi,                      // GHN tracking: GHNxxxxxxx
+      /\bSPX[A-Z0-9]{5,}\b/gi,                      // Shopee Express
+      /\bVTP[A-Z0-9]{5,}\b/gi,                       // Viettel Post
+      /\bJT[A-Z0-9]{8,}\b/gi,                        // J&T: JTxxxxxxxx
+      /\b[A-Z]{1,4}\d{4,}[A-Z0-9]*\b/g,             // letter prefix + mixed: C028Z67, VN123456789
+      /\b[A-Z0-9]{2,}[-_.][A-Z0-9]{4,}\b/g,         // dash/dot separated
+      /\b[A-Z][A-Z0-9]{5,}\b/g,                      // starts with letter, 6+ total chars
     ]
     const found = new Set<string>()
     for (const pat of patterns) {
-      for (const m of text.matchAll(pat)) {
-        const code = m[0].replace(/[_.\-]$/,'')
+      for (const m of text.toUpperCase().matchAll(pat)) {
+        const code = m[0].replace(/[_.\-]+$/, '')
         if (code.length >= 6) found.add(code)
       }
     }
@@ -269,7 +287,6 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
     await supabase.from('videos').update({ status: 'processing' }).eq('id', videoId)
 
-    // Wait for metadata
     if (!isFinite(videoEl.duration) || videoEl.duration === 0) {
       await new Promise<void>((res, rej) => {
         const onMeta = () => { videoEl.removeEventListener('loadedmetadata', onMeta); res() }
@@ -278,52 +295,131 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
       })
     }
 
-    // Sample every 2s
-    const SAMPLE_INTERVAL = 2
-    const OFFSET = 0
-    const EDGE_THRESHOLD = 0.04     // 4% edge pixels — fast pre-filter before OCR
-    const MIN_TEXT_LENGTH = 15      // minimum OCR chars to keep frame
+    // ── Video-level pre-checks (no AI needed) ──────────────────────────────
+    const VIDEO_MIN_DURATION = 10    // seconds
+    const VIDEO_MAX_DURATION = 600   // seconds
+    const VIDEO_MIN_WIDTH    = 640   // pixels
+    const preCheckErrors: Array<{ error_code: string; source: string; severity: string; description: string; confidence: number }> = []
+
+    if (videoEl.duration < VIDEO_MIN_DURATION) {
+      preCheckErrors.push({ error_code: 'VIDEO_TOO_SHORT', source: 'WAREHOUSE', severity: 'CRITICAL',
+        description: `Video duration ${videoEl.duration.toFixed(1)}s is below minimum ${VIDEO_MIN_DURATION}s.`, confidence: 1.0 })
+    }
+    if (videoEl.duration > VIDEO_MAX_DURATION) {
+      preCheckErrors.push({ error_code: 'VIDEO_TOO_LONG', source: 'WAREHOUSE', severity: 'WARNING',
+        description: `Video duration ${videoEl.duration.toFixed(1)}s exceeds expected ${VIDEO_MAX_DURATION}s.`, confidence: 1.0 })
+    }
+    if (videoEl.videoWidth > 0 && videoEl.videoWidth < VIDEO_MIN_WIDTH) {
+      preCheckErrors.push({ error_code: 'LOW_RESOLUTION', source: 'WAREHOUSE', severity: 'WARNING',
+        description: `Video resolution ${videoEl.videoWidth}×${videoEl.videoHeight} is below minimum ${VIDEO_MIN_WIDTH}px width.`, confidence: 1.0 })
+    }
+
+    if (preCheckErrors.length > 0) {
+      const { data: existingImg } = await supabase.from('dataset_images').select('id, ai_result').eq('video_id', videoId).limit(1).maybeSingle()
+      const existing = (existingImg?.ai_result ?? {}) as Record<string, unknown>
+      const mergedErrors = [...(Array.isArray(existing.wh_errors) ? existing.wh_errors : []), ...preCheckErrors]
+        .filter((e, i, arr) => arr.findIndex((x: any) => x.error_code === e.error_code) === i)
+      const hasCritical = mergedErrors.some((e: any) => e.severity === 'CRITICAL')
+      const caseStatus = hasCritical ? 'WH_PROCESS_FAIL' : 'PASS_WITH_WARNING'
+      if (existingImg?.id) {
+        await supabase.from('dataset_images').update({ ai_result: { ...existing, wh_errors: mergedErrors, case_status: caseStatus } }).eq('id', existingImg.id)
+      }
+    }
+
+    // ── Level 1: lightweight monitoring config ──────────────────────────────
+    const MONITOR_INTERVAL   = 0.5   // sample every 0.5s for event detection
+    const POST_EVENT_SECS    = 2.0   // collect frames for 2s after event before picking best
+    const ROLLING_BUFFER_MAX = 6     // rolling pre-event buffer size (~3s)
+    const MOTION_THRESHOLD   = 0.06  // pixelDiff fraction triggering MOTION_EVENT
+    const SCENE_THRESHOLD    = 0.22  // pixelDiff fraction triggering SCENE_CHANGE
+    const EDGE_SPIKE         = 0.10  // edge density jump → LABEL_VISIBLE
+    const DEDUP_THRESHOLD    = 0.04  // skip upload if too similar to last uploaded frame
+    const MIN_TEXT_LENGTH    = 10    // minimum OCR chars on selected key frame
+
+    type KeyFrameEvent = 'PARCEL_ENTER' | 'SCENE_CHANGE' | 'MOTION_EVENT' | 'LABEL_VISIBLE' | 'STATIC_LABEL'
+
+    interface MonitoredFrame {
+      ts: number
+      canvas: HTMLCanvasElement
+      thumb: HTMLCanvasElement
+      edgeDensity: number
+      motionScore: number
+    }
+
+    // Quality score for key frame selection (higher = better to send to AI)
+    const frameQuality = (f: MonitoredFrame): number =>
+      f.edgeDensity * 2.5 + Math.max(0, 0.25 - f.motionScore) * 1.5
+
+    const detectEvent = (f: MonitoredFrame, prev: MonitoredFrame | null): KeyFrameEvent | null => {
+      if (!prev) return 'PARCEL_ENTER'
+      if (f.motionScore > SCENE_THRESHOLD) return 'SCENE_CHANGE'
+      if (f.edgeDensity > EDGE_SPIKE && prev.edgeDensity < EDGE_SPIKE * 0.7) return 'LABEL_VISIBLE'
+      if (f.motionScore > MOTION_THRESHOLD) return 'MOTION_EVENT'
+      if (f.edgeDensity > EDGE_SPIKE) return 'STATIC_LABEL'
+      return null
+    }
+
+    const computeEdgeDensity = (canvas: HTMLCanvasElement): number => {
+      const small = document.createElement('canvas')
+      small.width = 160; small.height = Math.round(160 * (canvas.height / canvas.width))
+      const ctx = small.getContext('2d')!
+      ctx.drawImage(canvas, 0, 0, small.width, small.height)
+      const d = ctx.getImageData(0, 0, small.width, small.height).data
+      let edges = 0
+      const w = small.width * 4
+      for (let i = w; i < d.length - w; i += 4) {
+        const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+        const above = 0.299 * d[i - w] + 0.587 * d[i - w + 1] + 0.114 * d[i - w + 2]
+        const left  = 0.299 * d[i - 4] + 0.587 * d[i - 3] + 0.114 * d[i - 2]
+        if (Math.abs(gray - above) + Math.abs(gray - left) > 40) edges++
+      }
+      return edges / (small.width * small.height)
+    }
 
     const duration = videoEl.duration
-    const candidates: number[] = []
-    for (let t = OFFSET; t < duration; t += SAMPLE_INTERVAL)
-      candidates.push(parseFloat(t.toFixed(1)))
-    if (candidates.length === 0) candidates.push(Math.min(OFFSET, duration - 1))
-
-    const SIMILAR_THRESHOLD = 0.03  // < 3% pixel diff vs last saved frame → skip duplicate
+    const monitorTs: number[] = []
+    for (let t = 0; t < duration; t += MONITOR_INTERVAL)
+      monitorTs.push(parseFloat(t.toFixed(1)))
+    if (monitorTs.length === 0) monitorTs.push(0)
 
     const results: FrameResult[] = []
-    let lastSavedThumb: HTMLCanvasElement | null = null
+    let lastUploadedThumb: HTMLCanvasElement | null = null
     let thumbnailUpdated = false
     let kept = 0
+    const eventTimeline: Array<{ ts: number; event: string; quality: number }> = []
 
     cancelRef.current = false
     setJob({
       videoId, videoName,
-      current: 0, total: candidates.length,
+      current: 0, total: monitorTs.length,
       results: [], status: 'running',
-      message: 'Scanning frames...',
+      message: 'Level 1: monitoring video for events...',
     })
 
     let token = session.access_token
     let tokenFetchedAt = Date.now()
 
-    const uploadFrame = async (
-      ts: number, canvas: HTMLCanvasElement, thumb: HTMLCanvasElement,
-      clientBarcodes: string[], ocrResult: { text: string; codes: string[] },
+    const uploadKeyFrame = async (
+      f: MonitoredFrame,
+      eventType: KeyFrameEvent,
+      clientBarcodes: string[],
+      ocrResult: { text: string; codes: string[] },
     ): Promise<FrameResult> => {
       kept++
-      lastSavedThumb = thumb
-      setJob(prev => prev ? { ...prev, message: `Found text at ${ts}s — saving frame ${kept}` } : null)
+      lastUploadedThumb = f.thumb
+      setJob(prev => prev ? {
+        ...prev,
+        message: `[${eventType}] @${f.ts}s — uploading key frame ${kept} (quality ${frameQuality(f).toFixed(2)})`,
+      } : null)
 
-      const filename = `frame_${String(Math.round(ts)).padStart(6, '0')}.jpg`
-      // Full-res JPEG for storage quality — quality 0.92 balances size vs sharpness
-      const base64 = canvas.toDataURL('image/jpeg', 0.92).split(',')[1]
+      const filename = `frame_${String(Math.round(f.ts * 10)).padStart(7, '0')}.jpg`
+      const base64 = f.canvas.toDataURL('image/jpeg', 0.92).split(',')[1]
       const body = JSON.stringify({
-        image_base64: base64, video_id: videoId, frame_timestamp: ts, filename,
+        image_base64: base64, video_id: videoId, frame_timestamp: f.ts, filename,
         client_barcodes: clientBarcodes,
         client_tracking_codes: ocrResult.codes,
         client_label_text: ocrResult.text ? [ocrResult.text] : [],
+        event_type: eventType,
         ocr_only: true,
       })
 
@@ -340,7 +436,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
 
       if (!res!.ok) {
         const err = await res!.json().catch(() => ({})) as { detail?: string }
-        return { timestamp: ts, status: 'error', error: err.detail ?? `HTTP ${res!.status}` }
+        return { timestamp: f.ts, status: 'error', error: err.detail ?? `HTTP ${res!.status}` }
       }
       const data = await res!.json() as { id: string; file_path?: string; ai_result: Record<string, unknown> }
       const ai = data.ai_result ?? {}
@@ -349,80 +445,115 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         supabase.from('videos').update({ thumbnail_path: data.file_path }).eq('id', videoId).then(() => {})
       }
       return {
-        timestamp: ts, status: 'ok', imageId: data.id,
+        timestamp: f.ts, status: 'ok', imageId: data.id,
         detectedText: (ai.label_text as string[] | undefined) ?? [],
         detectedBarcodes: (ai.barcodes as string[] | undefined) ?? [],
         detectedCodes: (ai.tracking_codes as string[] | undefined) ?? [],
       }
     }
 
-    // In-flight upload promise — pipeline: OCR current frame while previous upload is in progress
+    // Rolling pre-event buffer + active event window state
+    const rollingBuffer: MonitoredFrame[] = []
+    let prevMonitored: MonitoredFrame | null = null
+    let eventWindow: { event: KeyFrameEvent; frames: MonitoredFrame[]; closeAt: number } | null = null
     let uploadInFlight: Promise<FrameResult> | null = null
 
-    for (let i = 0; i < candidates.length; i++) {
+    const flushEventWindow = async () => {
+      if (!eventWindow || eventWindow.frames.length === 0) { eventWindow = null; return }
+      // Pick best-quality frame in window
+      const best = eventWindow.frames.reduce((a, b) => frameQuality(a) >= frameQuality(b) ? a : b)
+      const q = frameQuality(best)
+
+      // Dedup: skip if too similar to last uploaded
+      if (lastUploadedThumb && pixelDiff(lastUploadedThumb, best.thumb) < DEDUP_THRESHOLD) {
+        eventWindow = null; return
+      }
+
+      // OCR on best frame
+      const [clientBarcodes, ocrResult] = await Promise.all([
+        decodeBarcode(best.canvas),
+        fullOcr(best.canvas),
+      ])
+
+      if (ocrResult.text.length >= MIN_TEXT_LENGTH || clientBarcodes.length > 0) {
+        if (uploadInFlight) { results.push(await uploadInFlight) }
+        uploadInFlight = uploadKeyFrame(best, eventWindow.event, clientBarcodes, ocrResult)
+        eventTimeline.push({ ts: best.ts, event: eventWindow.event, quality: q })
+        setJob(p => p ? { ...p, results: [...results] } : null)
+      }
+      eventWindow = null
+    }
+
+    for (let i = 0; i < monitorTs.length; i++) {
       if (cancelRef.current) break
 
-      const ts = candidates[i]
+      const ts = monitorTs[i]
 
-      // Refresh token every 45 minutes to avoid expiry on long videos
       if (Date.now() - tokenFetchedAt > 45 * 60 * 1000) {
         try { token = await getToken(); tokenFetchedAt = Date.now() } catch { /* keep old */ }
       }
 
       setJob(prev => prev ? {
         ...prev, current: i + 1,
-        message: `OCR scanning ${i + 1}/${candidates.length} — ${kept} frames with text`,
+        message: `Monitoring ${i + 1}/${monitorTs.length} @${ts}s — ${kept} key frames selected`,
       } : null)
 
       try {
         const { canvas, thumb } = await extractFrame(videoEl, ts)
+        const edgeDensity = computeEdgeDensity(canvas)
+        const motionScore = prevMonitored ? pixelDiff(prevMonitored.thumb, thumb) : 0
 
-        // ── Filter 1: edge density (fast — no Tesseract) ──
-        if (!hasEdgeDensity(canvas, EDGE_THRESHOLD)) continue
+        const monitored: MonitoredFrame = { ts, canvas, thumb, edgeDensity, motionScore }
 
-        // ── Filter 2: similarity vs last saved frame ──
-        if (lastSavedThumb && pixelDiff(lastSavedThumb, thumb) < SIMILAR_THRESHOLD) continue
+        // Rolling pre-event buffer
+        rollingBuffer.push(monitored)
+        if (rollingBuffer.length > ROLLING_BUFFER_MAX) rollingBuffer.shift()
 
-        // ── OCR runs while previous upload is still in-flight ──
-        const [clientBarcodes, ocrResult] = await Promise.all([
-          decodeBarcode(canvas),
-          fullOcr(canvas),
-        ])
+        const ev = detectEvent(monitored, prevMonitored)
+        prevMonitored = monitored
 
-        // Skip frames with no meaningful text
-        if (ocrResult.text.length < MIN_TEXT_LENGTH) continue
-
-        // ── Await previous upload before starting next (avoid out-of-order results) ──
-        if (uploadInFlight) {
-          const prev = await uploadInFlight
-          results.push(prev)
-          setJob(p => p ? { ...p, results: [...results] } : null)
+        // Close active event window if its time is up
+        if (eventWindow && ts >= eventWindow.closeAt) {
+          await flushEventWindow()
         }
 
-        // Start upload async — next frame's OCR will run in parallel
-        uploadInFlight = uploadFrame(ts, canvas, thumb, clientBarcodes, ocrResult)
+        if (ev && !eventWindow) {
+          // Start new event window — seed with rolling pre-event buffer
+          eventWindow = {
+            event: ev,
+            frames: [...rollingBuffer],
+            closeAt: ts + POST_EVENT_SECS,
+          }
+        } else if (ev && eventWindow) {
+          // Higher-priority event overrides current window
+          const priority: KeyFrameEvent[] = ['SCENE_CHANGE', 'PARCEL_ENTER', 'LABEL_VISIBLE', 'MOTION_EVENT', 'STATIC_LABEL']
+          if (priority.indexOf(ev) < priority.indexOf(eventWindow.event)) {
+            await flushEventWindow()
+            eventWindow = { event: ev, frames: [...rollingBuffer], closeAt: ts + POST_EVENT_SECS }
+          } else {
+            eventWindow.frames.push(monitored)
+          }
+        } else if (eventWindow) {
+          eventWindow.frames.push(monitored)
+        }
 
       } catch (e) {
-        if (uploadInFlight) {
-          const prev = await uploadInFlight
-          results.push(prev)
-          uploadInFlight = null
-        }
         results.push({ timestamp: ts, status: 'error', error: e instanceof Error ? e.message : 'unknown' })
       }
-
-      setJob(prev => prev ? { ...prev, results: [...results] } : null)
     }
 
-    // Flush last in-flight upload
+    // Flush remaining event window + in-flight upload
+    await flushEventWindow()
     if (uploadInFlight) {
-      try {
-        const last = await uploadInFlight
-        results.push(last)
-      } catch (e) {
-        results.push({ timestamp: candidates[candidates.length - 1], status: 'error', error: e instanceof Error ? e.message : 'unknown' })
+      try { results.push(await uploadInFlight) } catch (e) {
+        results.push({ timestamp: monitorTs[monitorTs.length - 1], status: 'error', error: e instanceof Error ? e.message : 'unknown' })
       }
-      setJob(prev => prev ? { ...prev, results: [...results] } : null)
+    }
+    setJob(prev => prev ? { ...prev, results: [...results] } : null)
+
+    // Save event timeline to video metadata
+    if (eventTimeline.length > 0) {
+      supabase.from('videos').update({ event_timeline: eventTimeline } as any).eq('id', videoId).then(() => {})
     }
 
     const ok = results.filter(r => r.status === 'ok').length
@@ -432,8 +563,8 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     setJob(prev => prev ? {
       ...prev, status: 'done',
       message: wasCancelled
-        ? `Cancelled — ${ok} frames saved so far`
-        : `Done! ${kept}/${candidates.length} frames kept → ${ok} analyzed`,
+        ? `Cancelled — ${ok} key frames saved`
+        : `Done! ${kept} key frames from ${monitorTs.length} monitored → ${ok} uploaded (${eventTimeline.length} events)`,
     } : null)
   }, [])
 

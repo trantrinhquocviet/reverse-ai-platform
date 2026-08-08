@@ -239,29 +239,55 @@ export function AnnotationEditor() {
         img.src = row.file_path
       })
 
+      // Upscale small images before OCR — Tesseract accuracy drops below ~600px wide
+      const MIN_W = 800
+      const scale = Math.max(1, MIN_W / img.naturalWidth)
       const c = document.createElement('canvas')
-      c.width = img.naturalWidth; c.height = img.naturalHeight
-      c.getContext('2d')!.drawImage(img, 0, 0)
+      c.width = Math.round(img.naturalWidth * scale)
+      c.height = Math.round(img.naturalHeight * scale)
+      const cCtx = c.getContext('2d')!
+      cCtx.imageSmoothingEnabled = true
+      cCtx.imageSmoothingQuality = 'high'
+      cCtx.drawImage(img, 0, 0, c.width, c.height)
+
+      // Adaptive grayscale threshold to improve contrast for dark/light backgrounds
+      const imgData = cCtx.getImageData(0, 0, c.width, c.height)
+      const pd = imgData.data
+      let lumSum = 0
+      for (let i = 0; i < pd.length; i += 4) lumSum += 0.299 * pd[i] + 0.587 * pd[i + 1] + 0.114 * pd[i + 2]
+      const adaptThresh = Math.min(220, Math.max(80, lumSum / (pd.length / 4) + 10))
+      for (let i = 0; i < pd.length; i += 4) {
+        const g = 0.299 * pd[i] + 0.587 * pd[i + 1] + 0.114 * pd[i + 2]
+        const v = g >= adaptThresh ? 255 : 0
+        pd[i] = pd[i + 1] = pd[i + 2] = v; pd[i + 3] = 255
+      }
+      cCtx.putImageData(imgData, 0, 0)
 
       if (!ocrWorkerRef.current) {
-        ocrWorkerRef.current = await createWorker('eng', 1, { logger: () => {} })
+        ocrWorkerRef.current = await createWorker('eng+vie', 1, { logger: () => {} })
       }
       const { data } = await ocrWorkerRef.current.recognize(c)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const words: any[] = (data as any).words ?? []
+      const lines: any[] = (data as any).lines ?? []
 
       const newBoxes: AnnotationBox[] = []
-      for (const word of words) {
-        if ((word.confidence ?? 0) < 40 || (word.text ?? '').trim().length < 2) continue
-        const { bbox } = word
+      for (const line of lines) {
+        const lineWords: any[] = (line.words ?? []).filter(
+          (w: any) => (w.confidence ?? 0) >= 35 && (w.text ?? '').trim().length >= 2
+        )
+        if (lineWords.length === 0) continue
+        // Use line bbox to group words — one box per line of text
+        const { bbox } = line
+        const lineText = lineWords.map((w: any) => w.text.trim()).join(' ')
+        const avgConf = lineWords.reduce((s: number, w: any) => s + w.confidence, 0) / lineWords.length
         newBoxes.push({
           id: `ocr-${Date.now()}-${newBoxes.length}`,
-          label: `ocr: ${word.text.trim()}`,
-          x: (bbox.x0 / img.naturalWidth) * 100,
-          y: (bbox.y0 / img.naturalHeight) * 100,
-          width: ((bbox.x1 - bbox.x0) / img.naturalWidth) * 100,
-          height: ((bbox.y1 - bbox.y0) / img.naturalHeight) * 100,
-          confidence: word.confidence / 100,
+          label: `ocr: ${lineText}`,
+          x: (bbox.x0 / scale / img.naturalWidth) * 100,
+          y: (bbox.y0 / scale / img.naturalHeight) * 100,
+          width: ((bbox.x1 - bbox.x0) / scale / img.naturalWidth) * 100,
+          height: ((bbox.y1 - bbox.y0) / scale / img.naturalHeight) * 100,
+          confidence: avgConf / 100,
           type: 'text',
           status: 'pending',
           source: 'ai',
@@ -276,7 +302,9 @@ export function AnnotationEditor() {
 
       const existing = boxes.filter(b => !b.id.startsWith('ocr-'))
       pushUndo([...existing, ...newBoxes])
-      setExtractedText(words.filter((w: any) => w.confidence >= 40).map((w: any) => w.text.trim()))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allWords: any[] = lines.flatMap((ln: any) => ln.words ?? [])
+      setExtractedText(allWords.filter((w: any) => w.confidence >= 35).map((w: any) => w.text.trim()))
     } catch (e) {
       setReanalyzeError(e instanceof Error ? e.message : 'OCR thất bại')
     } finally {

@@ -133,6 +133,244 @@ Return ONLY this JSON (no markdown, no explanation, no code block):
 
 IMPORTANT: label_text must contain ALL readable text from the image, one token per entry. Do not skip anything."""
 
+ACTIVE_BOX_PROMPT = """You are a warehouse computer vision assistant. A fixed overhead camera watches a packing/unpacking workstation.
+
+Your ONLY task: identify the ONE parcel that the operator is CURRENTLY handling (touching, lifting, rotating, opening, scanning, or packing). This is called the ACTIVE_PARCEL.
+
+SCORING SIGNALS (in priority order):
+1. HAND INTERACTION (strongest) — box touched by / between / overlapping with operator hands
+2. MOTION — box that is moving, being lifted, rotated, or repositioned
+3. WORK ZONE — box on the central workstation table (not stacked on shelves/sides)
+4. LABEL VISIBILITY — shipping label / barcode visible (weak signal — ignore background boxes with labels)
+
+RULES:
+- Return EXACTLY ONE active_parcel bounding box (the highest-scoring candidate)
+- If NO parcel is actively being handled (operator not visible, hands idle, all boxes static), set active_parcel_found: false
+- Bounding box coordinates: x, y = top-left corner as PERCENTAGE of image (0–100); width, height = size as PERCENTAGE
+- Do NOT return every box — only the ONE being handled right now
+- Background boxes stacked or static = NOT active parcel
+
+Return ONLY this JSON (no markdown, no explanation):
+{
+  "active_parcel_found": true,
+  "active_parcel_bbox": {
+    "x": 25.0,
+    "y": 30.0,
+    "width": 35.0,
+    "height": 40.0,
+    "confidence": 0.91
+  },
+  "signals": {
+    "hand_interaction": 0.95,
+    "motion": 0.80,
+    "work_zone": 0.90,
+    "parcel_label": 0.60
+  },
+  "notes": "operator holding box with both hands in center of frame"
+}
+
+If not found:
+{
+  "active_parcel_found": false,
+  "active_parcel_bbox": null,
+  "signals": {"hand_interaction": 0.0, "motion": 0.0, "work_zone": 0.0, "parcel_label": 0.0},
+  "notes": "no active parcel detected"
+}"""
+
+AWB_DETECT_PROMPT = """You are a warehouse vision assistant. A fixed overhead camera watches a packing workstation.
+
+CONTEXT: The ACTIVE_PARCEL has already been identified. Your task is to find the AWB (Air Waybill) / shipping label attached to that parcel and extract ALL readable text from it.
+
+STEP 1 — Detect the AWB/shipping label:
+- Look for a rectangular label stuck on the surface of the active parcel
+- It typically contains: tracking barcode + tracking number + sender/recipient address + route codes
+- It may be partially visible, folded, or at an angle
+
+STEP 2 — Detect text regions inside the label:
+- Identify individual text regions within the AWB (tracking code zone, address zone, barcode zone, route zone, etc.)
+- Each region gets its own bounding box
+
+STEP 3 — Extract and classify all text:
+- tracking_codes: shipment codes matching patterns like VN\d+, \d{12,}, J&T, GHN, GHTK, Shopee Express
+- barcodes: 1D/QR barcode values
+- order_codes: order/invoice numbers
+- route_info: hub codes, route identifiers, zones
+- raw_text: everything else visible
+
+Bounding box format: x, y = top-left as % of FULL image (0–100); width, height as % of full image.
+
+Return ONLY this JSON (no markdown, no explanation):
+{
+  "awb_found": true,
+  "awb_bbox": {"x": 20.0, "y": 35.0, "width": 30.0, "height": 20.0, "confidence": 0.88},
+  "text_regions": [
+    {"label": "tracking_zone", "x": 22.0, "y": 36.0, "width": 26.0, "height": 6.0, "confidence": 0.90},
+    {"label": "address_zone",  "x": 22.0, "y": 43.0, "width": 26.0, "height": 8.0, "confidence": 0.82}
+  ],
+  "tracking_codes": ["VN123456789VN"],
+  "barcodes": ["8935001234567"],
+  "order_codes": ["ORD-20240101-001"],
+  "route_info": ["HAN-SGN", "Hub: HAN01"],
+  "raw_text": ["every", "other", "word", "visible", "on", "label"],
+  "ocr_confidence": 0.87,
+  "notes": ""
+}
+
+If no AWB label is visible:
+{
+  "awb_found": false,
+  "awb_bbox": null,
+  "text_regions": [],
+  "tracking_codes": [], "barcodes": [], "order_codes": [], "route_info": [], "raw_text": [],
+  "ocr_confidence": 0.0,
+  "notes": "no AWB label visible"
+}"""
+
+PRODUCT_DETECT_PROMPT = """You are a warehouse vision assistant. A fixed overhead camera watches a packing/unpacking workstation.
+
+CONTEXT: ACTIVE_PARCEL has been identified and tracked. Your task is to determine the PARCEL STATE and detect any PRODUCTS that have been or are being removed from the parcel.
+
+PARCEL STATE — choose ONE:
+  PARCEL_RECEIVED   — parcel present, not yet touched
+  PARCEL_HANDLED    — operator handling/moving parcel, still closed
+  PARCEL_OPENING    — parcel being opened (flaps lifting, tape being cut)
+  PARCEL_OPENED     — parcel open, interior visible
+  PRODUCT_VISIBLE   — product(s) visible inside/on parcel
+  PRODUCT_REMOVED   — operator has removed product(s) from parcel
+  PRODUCT_INSPECTION — operator inspecting/scanning/rotating product
+  PROCESS_COMPLETED — parcel processing finished
+
+PRODUCT DETECTION (only when state is PARCEL_OPENED or later):
+For each detected product:
+- It must have EMERGED from the active parcel (not a pre-existing workstation object)
+- Score: emergence_from_parcel (30%) + hand_transfer (25%) + temporal_association (20%) + work_zone_placement (15%) + product_appearance (10%)
+- Assign product_id starting from 1
+- product_class: PRODUCT | PARCEL | AWB | HAND | SCANNER | PRINTER | PAPER | PACKAGING_MATERIAL | TOOL | BACKGROUND_OBJECT
+
+PRODUCT EVENTS detected in this frame (pick all that apply):
+PARCEL_OPENED | PRODUCT_REMOVED | PRODUCT_PLACED | PRODUCT_PICKED_UP | PRODUCT_ROTATED | PRODUCT_SCANNED | PRODUCT_INSPECTED | PROCESS_COMPLETED
+
+Bounding box: x, y = top-left as % of full image (0–100); width, height as %.
+
+Return ONLY this JSON (no markdown):
+{
+  "parcel_state": "PRODUCT_REMOVED",
+  "parcel_state_confidence": 0.88,
+  "products": [
+    {
+      "product_id": 1,
+      "product_class": "PRODUCT",
+      "bbox": {"x": 40.0, "y": 30.0, "width": 20.0, "height": 25.0},
+      "confidence": 0.85,
+      "score_breakdown": {
+        "emergence_from_parcel": 0.90,
+        "hand_transfer": 0.80,
+        "temporal_association": 0.75,
+        "work_zone_placement": 0.70,
+        "product_appearance": 0.65
+      },
+      "visible_text": ["brand name", "SKU", "barcode text"],
+      "notes": "removed from parcel, placed on table"
+    }
+  ],
+  "events": ["PRODUCT_REMOVED", "PRODUCT_PLACED"],
+  "notes": ""
+}
+
+If parcel is still closed or state is early:
+{
+  "parcel_state": "PARCEL_HANDLED",
+  "parcel_state_confidence": 0.82,
+  "products": [],
+  "events": [],
+  "notes": "parcel still closed, no products visible"
+}"""
+
+VIDEO_AUDIT_PROMPT = """You are a warehouse video quality auditor. A fixed overhead camera watches a packing/unpacking workstation.
+
+Your task: analyze THIS SINGLE FRAME for video and process quality issues.
+
+IMPORTANT RULE — always distinguish:
+1. WAREHOUSE error: the warehouse failed to provide evidence (source = WAREHOUSE)
+2. AI limitation: evidence exists but AI cannot read it (source = AI)
+3. System issue: technical failure unrelated to WH or AI (source = SYSTEM)
+4. Unknown: cannot determine cause (source = UNKNOWN)
+
+CAMERA / VIDEO QUALITY — use these exact error_codes:
+FRAME_BLUR, VIDEO_TOO_DARK, VIDEO_OVEREXPOSED, CAMERA_BLOCKED, CAMERA_SHAKE, WORK_ZONE_OUT_OF_FRAME, VIDEO_DISCONTINUITY
+
+AWB / LABEL EVIDENCE — use these exact error_codes:
+AWB_NOT_SHOWN, AWB_NOT_CLEAR, AWB_CODE_NOT_DETECTED, AWB_SHOWN_BUT_AI_UNREADABLE, AWB_PARTIALLY_HIDDEN, AWB_TOO_SMALL, AWB_TOO_FAST, MULTIPLE_AWB, AWB_MISMATCH
+
+PARCEL EVIDENCE — use these exact error_codes:
+ACTIVE_PARCEL_UNCLEAR, MULTIPLE_ACTIVE_PARCELS, PARCEL_OUT_OF_FRAME, PARCEL_SWITCH, PARCEL_TRACK_LOST
+
+OPENING EVIDENCE — use these exact error_codes:
+OPENING_NOT_CAPTURED, OPENING_PARTIALLY_CAPTURED, VIDEO_GAP_DURING_OPENING, PARCEL_ALREADY_OPENED, OPENING_OUT_OF_FRAME
+
+PRODUCT EVIDENCE — use these exact error_codes:
+PRODUCT_NOT_DETECTED, PRODUCT_NOT_CLEAR, PRODUCT_TOO_FAR, PRODUCT_TOO_FAST, PRODUCT_OCCLUDED, PRODUCT_OUT_OF_FRAME, PRODUCT_NOT_FULLY_SHOWN, PRODUCT_REMOVAL_NOT_CAPTURED, PRODUCT_SOURCE_UNVERIFIABLE, PRODUCT_OVERLAP, PRODUCT_COUNT_UNVERIFIABLE, PRODUCT_IDENTITY_UNVERIFIABLE
+
+IDENTIFICATION EVIDENCE — use these exact error_codes:
+BARCODE_NOT_SHOWN, BARCODE_UNREADABLE, PRODUCT_TEXT_NOT_SHOWN, PRODUCT_TEXT_UNREADABLE, SKU_UNVERIFIABLE, VARIANT_UNVERIFIABLE, LOT_UNVERIFIABLE, EXPIRY_UNVERIFIABLE
+
+PROCESS INTEGRITY — use these exact error_codes:
+WRONG_SEQUENCE, OBJECT_TRACK_LOST, CRITICAL_EVENT_MISSING, PROCESS_INCOMPLETE, MULTIPLE_PARCEL_CONFUSION, PRODUCT_SOURCE_BROKEN, EVIDENCE_TOO_WEAK
+
+SEVERITY: INFO (minor, non-critical) | WARNING (affects analysis quality) | CRITICAL (evidence unverifiable/missing)
+
+EVIDENCE CHECKLIST — what IS visible in this frame:
+active_parcel (clearly identifiable), awb_visible (label visible), awb_readable (text/code readable),
+opening (opening event captured), product_visible (product seen), barcode (readable barcode visible),
+product_text (readable product text visible), work_zone_clear (workstation clearly visible and well-lit)
+
+QUALITY COMPONENTS (0.0–1.0):
+camera_quality, awb_visibility, parcel_continuity, opening_evidence, product_visibility, identification_evidence, quantity_evidence
+
+EVENT AUDIT — for each workflow step, assess based on what's visible in this frame:
+Use: "PASS", "FAIL", "UNCERTAIN", "NOT_VISIBLE" (not seen in this frame yet)
+Steps: active_parcel, awb_visible, awb_readable, opening, product_emergence, product_removed, product_full_view, barcode, product_text, quantity, process_completed
+
+Return ONLY this JSON (no markdown, no explanation):
+{
+  "wh_errors": [
+    {
+      "error_code": "AWB_NOT_CLEAR",
+      "source": "WAREHOUSE",
+      "severity": "CRITICAL",
+      "description": "AWB label present but blurry — no readable key frame",
+      "confidence": 0.88,
+      "frame_timestamp": 0
+    }
+  ],
+  "evidence_checklist": {
+    "active_parcel": true, "awb_visible": true, "awb_readable": false,
+    "opening": false, "product_visible": false, "barcode": false,
+    "product_text": false, "work_zone_clear": true
+  },
+  "quality_components": {
+    "camera_quality": 0.85, "awb_visibility": 0.20, "parcel_continuity": 0.90,
+    "opening_evidence": 0.0, "product_visibility": 0.0, "identification_evidence": 0.0, "quantity_evidence": 0.0
+  },
+  "event_audit": {
+    "active_parcel": "PASS", "awb_visible": "PASS", "awb_readable": "FAIL",
+    "opening": "NOT_VISIBLE", "product_emergence": "NOT_VISIBLE", "product_removed": "NOT_VISIBLE",
+    "product_full_view": "NOT_VISIBLE", "barcode": "NOT_VISIBLE", "product_text": "NOT_VISIBLE",
+    "quantity": "NOT_VISIBLE", "process_completed": "NOT_VISIBLE"
+  },
+  "video_evidence_score": 42,
+  "case_status": "HUMAN_REVIEW_REQUIRED",
+  "notes": "AWB label exists but unreadable in this frame"
+}
+
+case_status rules:
+- PASS: no errors, score >= 70, no FAIL in event_audit
+- PASS_WITH_WARNING: only WARNING/INFO errors, score >= 70
+- AI_UNCERTAIN: critical AI limitation (source=AI), no warehouse errors
+- WH_PROCESS_FAIL: CRITICAL WAREHOUSE error, confidence >= 0.85
+- SYSTEM_ERROR: source=SYSTEM errors present
+- HUMAN_REVIEW_REQUIRED: CRITICAL errors but confidence < 0.85, or mixed source"""
+
 
 class AnalyzeFrameRequest(BaseModel):
     image_base64: str = ""        # base64 string OR empty when image_url is provided
@@ -145,8 +383,13 @@ class AnalyzeFrameRequest(BaseModel):
     client_tracking_codes: list[str] = []
     client_label_text: list[str] = []
     preferred_model: str = ""
-    text_only: bool = False       # skip object detection, extract all visible text only
-    ocr_only: bool = False        # skip AI entirely — save frame with client-side OCR results
+    text_only: bool = False          # skip object detection, extract all visible text only
+    ocr_only: bool = False           # skip AI entirely — save frame with client-side OCR results
+    active_parcel_only: bool = False # focused active-parcel detection step, returns active_parcel_bbox
+    awb_detect: bool = False         # step 2: detect AWB/shipping label on active parcel → OCR text regions
+    product_detect: bool = False     # step 3: detect parcel state + products removed from active parcel
+    event_type: str = ""             # event that triggered this key frame (e.g. SCENE_CHANGE, LABEL_VISIBLE)
+    video_audit: bool = False        # parallel WH_VIDEO_AUDIT pipeline — assess video/process quality issues
 
 # region text → approximate bounding box (fallback for old-format models)
 _REGION_COORDS: dict[str, tuple[float, float, float, float]] = {
@@ -345,9 +588,20 @@ async def _call_one_model(image_base64: str, model: str, client: httpx.AsyncClie
     return json.loads(text)
 
 
-async def call_vision_ai(image_base64: str, preferred_model: str = "", text_only: bool = False) -> tuple[dict, str]:
+async def call_vision_ai(image_base64: str, preferred_model: str = "", text_only: bool = False, active_parcel_only: bool = False, awb_detect: bool = False, product_detect: bool = False, video_audit: bool = False) -> tuple[dict, str]:
     """Try preferred model first, then fallback list on 429 / rate-limit. Returns (result, model_used)."""
-    prompt = TEXT_ONLY_PROMPT if text_only else VISION_PROMPT
+    if active_parcel_only:
+        prompt = ACTIVE_BOX_PROMPT
+    elif awb_detect:
+        prompt = AWB_DETECT_PROMPT
+    elif product_detect:
+        prompt = PRODUCT_DETECT_PROMPT
+    elif video_audit:
+        prompt = VIDEO_AUDIT_PROMPT
+    elif text_only:
+        prompt = TEXT_ONLY_PROMPT
+    else:
+        prompt = VISION_PROMPT
     order = list(VISION_MODELS)
     if preferred_model and preferred_model in order:
         order.remove(preferred_model)
@@ -513,7 +767,161 @@ async def analyze_frame(
             "packaging_status": "unknown", "package_count": 0,
             "label_text": list(request.client_label_text),
             "confidence": 0.0, "notes": "ocr_only",
+            **({"event_type": request.event_type} if request.event_type else {}),
         }
+    elif request.active_parcel_only or request.awb_detect or request.product_detect or request.video_audit:
+        # ── Incremental detection steps (merge into existing DB record) ────────
+        _supabase_headers = {
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        }
+
+        async def _fetch_existing() -> tuple[str | None, dict]:
+            async with httpx.AsyncClient(timeout=15.0) as _c:
+                r = await _c.get(
+                    f"{SUPABASE_URL}/rest/v1/dataset_images",
+                    headers=_supabase_headers,
+                    params={"video_id": f"eq.{request.video_id}", "image_name": f"eq.{request.filename}", "select": "id,ai_result"},
+                )
+                rows = r.json() if r.status_code == 200 else []
+            if rows:
+                return rows[0]["id"], (rows[0].get("ai_result") or {})
+            return None, {}
+
+        async def _patch_db(row_id: str, merged: dict) -> None:
+            async with httpx.AsyncClient(timeout=15.0) as _c:
+                await _c.patch(
+                    f"{SUPABASE_URL}/rest/v1/dataset_images",
+                    headers={**_supabase_headers, "Content-Type": "application/json", "Prefer": "return=representation"},
+                    params={"id": f"eq.{row_id}"},
+                    json={"ai_result": merged},
+                )
+
+        model_used = request.preferred_model or VISION_MODELS[0]
+        row_id, existing_ai = await _fetch_existing()
+
+        if request.active_parcel_only:
+            try:
+                step_result, model_used = await call_vision_ai(image_b64, request.preferred_model, active_parcel_only=True)
+            except HTTPException:
+                raise
+            except Exception as e:
+                step_result = {"active_parcel_found": False, "active_parcel_bbox": None, "notes": str(e)}
+            extra = {
+                "active_parcel_found": step_result.get("active_parcel_found", False),
+                "active_parcel_bbox": step_result.get("active_parcel_bbox"),
+                "active_parcel_signals": step_result.get("signals"),
+            }
+
+        elif request.awb_detect:
+            # If active_parcel_bbox is known, auto-crop to it before sending to AI
+            apb = existing_ai.get("active_parcel_bbox")
+            awb_b64 = image_b64
+            if apb and isinstance(apb, dict):
+                try:
+                    from PIL import Image as _PIL  # noqa: PLC0415
+                    import io as _io  # noqa: PLC0415
+                    raw_bytes = _b64.b64decode(image_b64)
+                    pil_img = _PIL.open(_io.BytesIO(raw_bytes))
+                    iw, ih = pil_img.size
+                    margin = 0.05  # 5% margin around parcel crop
+                    cx = max(apb["x"] - margin * 100, 0) / 100
+                    cy = max(apb["y"] - margin * 100, 0) / 100
+                    cr = min((apb["x"] + apb["width"] + margin * 100), 100) / 100
+                    cb = min((apb["y"] + apb["height"] + margin * 100), 100) / 100
+                    cropped = pil_img.crop((int(iw * cx), int(ih * cy), int(iw * cr), int(ih * cb)))
+                    buf = _io.BytesIO()
+                    cropped.save(buf, format="JPEG", quality=90)
+                    awb_b64 = _b64.b64encode(buf.getvalue()).decode()
+                except Exception:
+                    pass  # fallback to full image
+
+            try:
+                step_result, model_used = await call_vision_ai(awb_b64, request.preferred_model, active_parcel_only=False, awb_detect=True)
+            except HTTPException:
+                raise
+            except Exception as e:
+                step_result = {"awb_found": False, "awb_bbox": None, "notes": str(e)}
+
+            # Merge AWB tracking codes into top-level fields
+            awb_codes = step_result.get("tracking_codes") or []
+            awb_barcodes = step_result.get("barcodes") or []
+            merged_codes = list(set((existing_ai.get("tracking_codes") or []) + awb_codes))
+            merged_barcodes = list(set((existing_ai.get("barcodes") or []) + awb_barcodes))
+            extra = {
+                "awb_found": step_result.get("awb_found", False),
+                "awb_bbox": step_result.get("awb_bbox"),
+                "awb_text_regions": step_result.get("text_regions", []),
+                "awb_order_codes": step_result.get("order_codes", []),
+                "awb_route_info": step_result.get("route_info", []),
+                "awb_raw_text": step_result.get("raw_text", []),
+                "awb_ocr_confidence": step_result.get("ocr_confidence", 0.0),
+                "tracking_codes": merged_codes,
+                "barcodes": merged_barcodes,
+            }
+
+        elif request.product_detect:
+            try:
+                step_result, model_used = await call_vision_ai(image_b64, request.preferred_model, product_detect=True)
+            except HTTPException:
+                raise
+            except Exception as e:
+                step_result = {"parcel_state": "UNKNOWN", "products": [], "events": [], "notes": str(e)}
+            extra = {
+                "parcel_state": step_result.get("parcel_state", "UNKNOWN"),
+                "parcel_state_confidence": step_result.get("parcel_state_confidence", 0.0),
+                "products": step_result.get("products", []),
+                "product_events": step_result.get("events", []),
+            }
+
+        else:  # video_audit
+            try:
+                step_result, model_used = await call_vision_ai(image_b64, request.preferred_model, video_audit=True)
+            except HTTPException:
+                raise
+            except Exception as e:
+                step_result = {"wh_errors": [], "video_evidence_score": 0, "case_status": "HUMAN_REVIEW_REQUIRED", "notes": str(e)}
+
+            # Accumulate errors from previous audits on the same video record
+            prev_errors: list = existing_ai.get("wh_errors") or []
+            new_errors: list = step_result.get("wh_errors") or []
+            # Merge: keep unique error_codes, new result wins on duplicates
+            existing_codes = {e.get("error_code") for e in prev_errors}
+            merged_errors = prev_errors + [e for e in new_errors if e.get("error_code") not in existing_codes]
+
+            # Running average of evidence score
+            prev_scores: list = existing_ai.get("audit_scores_history") or []
+            new_score = step_result.get("video_evidence_score", 0)
+            prev_scores.append(new_score)
+            avg_score = round(sum(prev_scores) / len(prev_scores))
+
+            # Determine overall case_status — worst status wins
+            status_priority = ["WH_PROCESS_FAIL", "HUMAN_REVIEW_REQUIRED", "AI_UNCERTAIN", "PASS"]
+            new_status = step_result.get("case_status", "HUMAN_REVIEW_REQUIRED")
+            prev_status = existing_ai.get("case_status", "PASS")
+            case_status = new_status if status_priority.index(new_status) < status_priority.index(prev_status) else prev_status
+
+            # Merge evidence checklist (any true stays true)
+            prev_checklist: dict = existing_ai.get("evidence_checklist") or {}
+            new_checklist: dict = step_result.get("evidence_checklist") or {}
+            merged_checklist = {k: prev_checklist.get(k, False) or new_checklist.get(k, False)
+                                for k in set(list(prev_checklist) + list(new_checklist))}
+
+            extra = {
+                "wh_errors": merged_errors,
+                "evidence_checklist": merged_checklist,
+                "quality_components": step_result.get("quality_components"),
+                "video_evidence_score": avg_score,
+                "audit_scores_history": prev_scores,
+                "case_status": case_status,
+            }
+
+        merged_ai = {**existing_ai, **extra}
+        if row_id:
+            await _patch_db(row_id, merged_ai)
+            return {"id": row_id, "ai_result": merged_ai, "model_used": model_used}
+        return {"ai_result": merged_ai, "model_used": model_used}
+
     else:
         # Call vision AI (OpenRouter) with auto-fallback
         model_used = request.preferred_model or VISION_MODELS[0]

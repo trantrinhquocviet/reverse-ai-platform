@@ -30,6 +30,17 @@ class AnnotationUpdate(BaseModel):
     height: Optional[float] = None
 
 
+class OcrRequest(BaseModel):
+    image_url: Optional[str] = None
+    image_base64: Optional[str] = None
+    languages: list[str] = Field(default=["vi", "en"])
+
+
+class OcrResponse(BaseModel):
+    text: str
+    lines: list[str]
+
+
 class AnnotationOut(BaseModel):
     id: uuid.UUID
     frame_id: uuid.UUID
