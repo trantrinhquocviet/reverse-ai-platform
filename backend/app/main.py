@@ -106,7 +106,7 @@ async def health_check() -> dict:
 
 
 # ── Static frontend (must be mounted last) ────────────────────────────────────
-_STATIC_DIR = Path(__file__).parent.parent.parent / "static"
+_STATIC_DIR = Path(__file__).parent.parent / "static"
 
 if _STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="assets")
