@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import uuid
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.core.database import get_db
 from app.dependencies import CurrentUser, get_current_user
 from app.modules.annotation.schemas import AnnotationCreate, AnnotationOut, AnnotationUpdate, OcrRequest, OcrResponse
@@ -19,33 +17,20 @@ from app.schemas.common import PaginatedResponse, SuccessResponse
 router = APIRouter(prefix="/annotations", tags=["Annotations"])
 
 
-async def _ocr_google_vision(image_b64: str) -> list[str]:
-    api_key = settings.GOOGLE_VISION_API_KEY
-    if not api_key:
-        raise HTTPException(status_code=503, detail="Google Vision API key not configured")
+def _run_tesseract(image_bytes: bytes) -> list[str]:
+    import pytesseract  # noqa: PLC0415
+    from PIL import Image  # noqa: PLC0415
 
-    payload = {
-        "requests": [{
-            "image": {"content": image_b64},
-            "features": [{"type": "TEXT_DETECTION", "maxResults": 1}],
-            "imageContext": {"languageHints": ["vi", "en"]},
-        }]
-    }
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"https://vision.googleapis.com/v1/images:annotate?key={api_key}",
-            content=json.dumps(payload),
-            headers={"Content-Type": "application/json"},
-        )
-    resp.raise_for_status()
-    data = resp.json()
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    try:
-        full_text: str = data["responses"][0]["fullTextAnnotation"]["text"]
-        lines = [ln.strip() for ln in full_text.splitlines() if len(ln.strip()) >= 2]
-        return lines
-    except (KeyError, IndexError):
-        return []
+    # Upscale small images for better accuracy
+    if img.width < 800:
+        ratio = 800 / img.width
+        img = img.resize((800, int(img.height * ratio)), Image.LANCZOS)
+
+    text = pytesseract.image_to_string(img, lang="vie+eng", config="--psm 6")
+    lines = [ln.strip() for ln in text.splitlines() if len(ln.strip()) >= 2]
+    return lines
 
 
 @router.post("/ocr", response_model=OcrResponse)
@@ -53,18 +38,22 @@ async def run_ocr(
     body: OcrRequest,
     current_user: CurrentUser = Depends(get_current_user),
 ) -> OcrResponse:
+    import asyncio  # noqa: PLC0415
+
     if not body.image_url and not body.image_base64:
         raise HTTPException(status_code=422, detail="Provide image_url or image_base64")
 
     if body.image_base64:
-        image_b64 = body.image_base64
+        image_bytes = base64.b64decode(body.image_base64)
     else:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(body.image_url)  # type: ignore[arg-type]
         resp.raise_for_status()
-        image_b64 = base64.b64encode(resp.content).decode()
+        image_bytes = resp.content
 
-    lines = await _ocr_google_vision(image_b64)
+    # Run in thread pool to avoid blocking event loop
+    loop = asyncio.get_event_loop()
+    lines = await loop.run_in_executor(None, _run_tesseract, image_bytes)
     return OcrResponse(text="\n".join(lines), lines=lines)
 
 

@@ -36,9 +36,6 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = ""
     SUPABASE_STORAGE_BUCKET: str = "videos"
 
-    # Google Vision API
-    GOOGLE_VISION_API_KEY: str = ""
-
     # JWT
     JWT_SECRET: str = "change-me-in-production"
     JWT_ALGORITHM: str = "HS256"
