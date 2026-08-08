@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Search, CheckCheck, Cpu, AlertCircle, Eye, Download, Loader2, X, ChevronRight, ListVideo, Bot, Zap } from 'lucide-react'
+import { Bell, Search, CheckCheck, Cpu, AlertCircle, Eye, Download, Loader2, X, ChevronRight, ListVideo, Bot, Zap, Pause, Play, Square } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { mockNotifications } from '@/services/mockData'
 import { useProcessing, VISION_MODELS } from '@/contexts/ProcessingContext'
@@ -55,7 +55,7 @@ export function TopBar() {
   const location = useLocation()
   const navigate = useNavigate()
   const crumbs = getBreadcrumb(location.pathname)
-  const { job, queue, preferredModel, setPreferredModel, removeFromQueue, clearQueue, cancelJob } = useProcessing()
+  const { job, queue, preferredModel, paused, setPreferredModel, removeFromQueue, clearQueue, pauseJob, resumeJob, cancelJob } = useProcessing()
 
   const [notifications, setNotifications] = useState<Notification[]>(mockNotifications)
   const [queueOpen, setQueueOpen] = useState(false)
@@ -182,17 +182,27 @@ export function TopBar() {
                     <div className="px-4 py-3">
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
-                          <div className="w-1.5 h-1.5 rounded-full bg-[#7c6af7] animate-pulse" />
-                          <span className="text-[10px] text-[#55556a] font-medium uppercase tracking-wider">Processing now</span>
+                          <div className={cn('w-1.5 h-1.5 rounded-full', paused ? 'bg-[#fbbf24]' : 'bg-[#7c6af7] animate-pulse')} />
+                          <span className="text-[10px] text-[#55556a] font-medium uppercase tracking-wider">{paused ? 'Paused' : 'Processing now'}</span>
                         </div>
-                        <button
-                          onClick={() => cancelJob()}
-                          className="flex items-center gap-1 text-[10px] text-[#55556a] hover:text-[#f87171] transition-colors px-2 py-0.5 rounded-[4px] hover:bg-[#f8717110]"
-                          title="Cancel processing"
-                        >
-                          <X className="w-3 h-3" />
-                          Cancel
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => paused ? resumeJob() : pauseJob()}
+                            className="flex items-center gap-1 text-[10px] text-[#55556a] hover:text-[#fbbf24] transition-colors px-2 py-0.5 rounded-[4px] hover:bg-[#fbbf2410]"
+                            title={paused ? 'Resume processing' : 'Pause processing'}
+                          >
+                            {paused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+                            {paused ? 'Resume' : 'Pause'}
+                          </button>
+                          <button
+                            onClick={() => cancelJob()}
+                            className="flex items-center gap-1 text-[10px] text-[#55556a] hover:text-[#f87171] transition-colors px-2 py-0.5 rounded-[4px] hover:bg-[#f8717110]"
+                            title="Stop processing"
+                          >
+                            <Square className="w-3 h-3" />
+                            Stop
+                          </button>
+                        </div>
                       </div>
                       <div
                         className="flex items-center gap-3 cursor-pointer group"
@@ -203,7 +213,7 @@ export function TopBar() {
                           <div className="flex items-center gap-2 mt-1">
                             <div className="flex-1 h-1 rounded-full bg-[#1e1e2a]">
                               <div
-                                className="h-1 rounded-full bg-[#7c6af7] transition-all duration-300"
+                                className={cn('h-1 rounded-full transition-all duration-300', paused ? 'bg-[#fbbf24]' : 'bg-[#7c6af7]')}
                                 style={{ width: `${job.total ? (job.current / job.total) * 100 : 0}%` }}
                               />
                             </div>

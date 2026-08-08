@@ -67,11 +67,14 @@ interface ProcessingContextValue {
   job: ProcessingJob | null
   queue: QueuedVideo[]
   preferredModel: string
+  paused: boolean
   setPreferredModel: (model: string) => void
   addToQueue: (videos: QueuedVideo[]) => void
   removeFromQueue: (videoId: string) => void
   clearQueue: () => void
   startProcessing: (videoId: string, videoName: string, videoEl: HTMLVideoElement) => Promise<void>
+  pauseJob: () => void
+  resumeJob: () => void
   cancelJob: () => void
   clearJob: () => void
 }
@@ -102,8 +105,10 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
       return saved ? (JSON.parse(saved) as QueuedVideo[]) : []
     } catch { return [] }
   })
+  const [paused, setPaused] = useState(false)
   const processingRef = useRef(false)
   const cancelRef = useRef(false)
+  const pauseRef = useRef(false)
   const hiddenVideoRef = useRef<HTMLVideoElement | null>(null)
   const zxingRef = useRef<BrowserMultiFormatReader | null>(null)
   const ocrWorkerRef = useRef<TesseractWorker | null>(null)
@@ -389,6 +394,8 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     const eventTimeline: Array<{ ts: number; event: string; quality: number }> = []
 
     cancelRef.current = false
+    pauseRef.current = false
+    setPaused(false)
     setJob({
       videoId, videoName,
       current: 0, total: monitorTs.length,
@@ -487,6 +494,12 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     for (let i = 0; i < monitorTs.length; i++) {
       if (cancelRef.current) break
 
+      // Pause: spin-wait until resumed or cancelled
+      while (pauseRef.current && !cancelRef.current) {
+        await new Promise(r => setTimeout(r, 300))
+      }
+      if (cancelRef.current) break
+
       const ts = monitorTs[i]
 
       if (Date.now() - tokenFetchedAt > 45 * 60 * 1000) {
@@ -568,7 +581,9 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     } : null)
   }, [])
 
-  const cancelJob = useCallback(() => { cancelRef.current = true }, [])
+  const pauseJob = useCallback(() => { pauseRef.current = true; setPaused(true) }, [])
+  const resumeJob = useCallback(() => { pauseRef.current = false; setPaused(false) }, [])
+  const cancelJob = useCallback(() => { pauseRef.current = false; setPaused(false); cancelRef.current = true }, [])
   const clearJob = useCallback(() => setJob(null), [])
 
   const setQueuePersisted = useCallback((updater: (prev: QueuedVideo[]) => QueuedVideo[]) => {
@@ -616,7 +631,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   }, [queue, job, startProcessing])
 
   return (
-    <ProcessingContext.Provider value={{ job, queue, preferredModel, setPreferredModel, addToQueue, removeFromQueue, clearQueue, startProcessing, cancelJob, clearJob }}>
+    <ProcessingContext.Provider value={{ job, queue, preferredModel, paused, setPreferredModel, addToQueue, removeFromQueue, clearQueue, startProcessing, pauseJob, resumeJob, cancelJob, clearJob }}>
       {/* Hidden video element used for background queue processing */}
       <video ref={hiddenVideoRef} className="hidden" preload="metadata" crossOrigin="anonymous" />
       {children}

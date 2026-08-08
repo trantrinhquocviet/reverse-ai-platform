@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAutoTrain } from '@/hooks/useAutoTrain'
-import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save, Video, ChevronDown, Square, CheckSquare, ScanText, Server, Sparkles, PackageSearch, FileText, Box, ShieldAlert, ShieldCheck, ShieldX, AlertTriangle } from 'lucide-react'
+import { Tag, CheckCircle, XCircle, Filter, Loader2, RefreshCw, ZoomIn, X, Pencil, Save, Video, ChevronDown, Square, CheckSquare, ScanText, Server, Sparkles, PackageSearch, FileText, Box, ShieldAlert, ShieldCheck, ShieldX, AlertTriangle, Trash2, RotateCcw } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { supabase } from '@/services/api'
 
@@ -131,7 +131,7 @@ interface DatasetFrame {
   ai_result: AIResult | null
   split_type: string
   created_at: string
-  review_status: 'pending' | 'approved' | 'rejected'
+  review_status: 'pending' | 'approved' | 'rejected' | 'deleted'
   annotation_id: string | null
 }
 
@@ -187,7 +187,11 @@ async function fetchFrames(filterStatus: string, videoId: string): Promise<Datas
       review_status: ann?.status ?? 'pending',
       annotation_id: ann?.id ?? null,
     }
-  }).filter((f: DatasetFrame) => filterStatus === 'all' || f.review_status === filterStatus)
+  }).filter((f: DatasetFrame) => {
+    if (filterStatus === 'deleted') return f.review_status === 'deleted'
+    if (filterStatus === 'all') return f.review_status !== 'deleted'
+    return f.review_status === filterStatus
+  })
 }
 
 async function reviewFrame(
@@ -223,6 +227,24 @@ async function reviewFrame(
   }
 }
 
+async function softDeleteFrame(frameId: string, annotationId: string | null, reviewerId: string) {
+  if (annotationId) {
+    const { error } = await supabase
+      .from('annotations')
+      .update({ status: 'deleted', reviewer_id: reviewerId, reviewed_at: new Date().toISOString() })
+      .eq('id', annotationId)
+    if (error) throw new Error(error.message)
+  } else {
+    const { error } = await supabase.from('annotations').insert({
+      dataset_image_id: frameId,
+      status: 'deleted',
+      reviewer_id: reviewerId,
+      reviewed_at: new Date().toISOString(),
+    })
+    if (error) throw new Error(error.message)
+  }
+}
+
 async function reanalyzeFrame(frame: DatasetFrame, token: string): Promise<void> {
   const resp = await fetch('/api/analyze_frame', {
     method: 'POST',
@@ -244,9 +266,10 @@ async function reanalyzeFrame(frame: DatasetFrame, token: string): Promise<void>
 
 function StatusBadge({ status }: { status: DatasetFrame['review_status'] }) {
   const cfg = {
-    pending: 'bg-[#f59e0b20] text-[#fbbf24]',
+    pending:  'bg-[#f59e0b20] text-[#fbbf24]',
     approved: 'bg-[#16a34a20] text-[#4ade80]',
     rejected: 'bg-[#dc262620] text-[#f87171]',
+    deleted:  'bg-[#6b728020] text-[#9ca3af] line-through',
   }
   return (
     <span className={cn('px-2 py-0.5 rounded-full text-[10px] font-medium capitalize', cfg[status])}>
@@ -660,6 +683,29 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
       queryClient.invalidateQueries({ queryKey: ['annotation-frames'] })
       if (status === 'approved') incrementCount()
       onReviewed()
+    },
+  })
+
+  const softDelete = useMutation({
+    mutationFn: () => softDeleteFrame(frame.id, frame.annotation_id, reviewerId),
+    onSuccess: () => {
+      setLocalStatus('deleted')
+      queryClient.invalidateQueries({ queryKey: ['annotation-frames'] })
+    },
+  })
+
+  const restore = useMutation({
+    mutationFn: async () => {
+      if (!frame.annotation_id) return
+      const { error } = await supabase
+        .from('annotations')
+        .update({ status: 'pending', reviewer_id: reviewerId, reviewed_at: new Date().toISOString() })
+        .eq('id', frame.annotation_id)
+      if (error) throw new Error(error.message)
+    },
+    onSuccess: () => {
+      setLocalStatus('pending')
+      queryClient.invalidateQueries({ queryKey: ['annotation-frames'] })
     },
   })
 
@@ -1319,6 +1365,25 @@ function FrameCard({ frame, reviewerId, onReviewed, selected, onSelect }: {
             {review.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <XCircle className="w-3 h-3" />}
             Reject
           </button>
+          {localStatus === 'deleted' ? (
+            <button
+              onClick={() => restore.mutate()}
+              disabled={restore.isPending}
+              title="Khôi phục frame"
+              className="px-2 py-1.5 rounded-[6px] text-xs transition-colors border bg-[#16a34a20] text-[#4ade80] border-[#16a34a40] hover:bg-[#16a34a30]"
+            >
+              {restore.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+            </button>
+          ) : (
+            <button
+              onClick={() => softDelete.mutate()}
+              disabled={softDelete.isPending}
+              title="Soft delete frame"
+              className="px-2 py-1.5 rounded-[6px] text-xs transition-colors border bg-[#6b728020] text-[#9ca3af] border-[#6b728040] hover:bg-[#6b728030]"
+            >
+              {softDelete.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+            </button>
+          )}
           <button
             onClick={handleReanalyze}
             disabled={reanalyzing}
@@ -1493,7 +1558,7 @@ export function AnnotationQueue() {
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <Filter className="w-3.5 h-3.5 text-[#8888a8]" />
-          {(['all', 'pending', 'approved', 'rejected'] as const).map(s => (
+          {(['all', 'pending', 'approved', 'rejected', 'deleted'] as const).map(s => (
             <button
               key={s}
               onClick={() => setFilterStatus(s)}
@@ -1574,6 +1639,21 @@ export function AnnotationQueue() {
               {bulkReanalyzing
                 ? <><Loader2 className="w-3 h-3 animate-spin" /> {bulkProgress?.done}/{bulkProgress?.total}</>
                 : <><RefreshCw className="w-3 h-3" /> Re-analyze {selectedIds.size} ảnh</>}
+            </button>
+          )}
+          {selectedIds.size > 0 && (
+            <button
+              onClick={async () => {
+                const { data: { session } } = await supabase.auth.getSession()
+                const rid = session?.user?.id ?? ''
+                const targets = frames.filter(f => selectedIds.has(f.id))
+                await Promise.all(targets.map(f => softDeleteFrame(f.id, f.annotation_id, rid)))
+                setSelectedIds(new Set())
+                queryClient.invalidateQueries({ queryKey: ['annotation-frames'] })
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[6px] bg-[#6b728020] text-[#9ca3af] border border-[#6b728040] text-xs font-medium hover:bg-[#6b728030] transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Delete {selectedIds.size} ảnh
             </button>
           )}
           {selectedIds.size > 0 && (
