@@ -9,7 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt .
-RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
+
+# Cache bust: 2026-08-08
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip uninstall -y aioredis || true
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
@@ -19,18 +22,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /install /usr/local
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 RUN groupadd --gid 1001 appgroup && \
     useradd --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
 
 WORKDIR /app
 
-# Copy backend source
 COPY --chown=appuser:appgroup backend/ .
-
-# Copy pre-built frontend (built locally with VITE_API_URL=/api/v1)
-COPY --chown=appuser:appgroup backend/static ./static
 
 USER appuser
 
