@@ -742,6 +742,111 @@ async def _fetch_and_prepare_image(request: AnalyzeFrameRequest) -> str:
     return b64
 
 
+@app.post("/api/finalize_video_audit")
+async def finalize_video_audit(
+    video_id: str,
+    authorization: str = Header(None),
+):
+    """
+    Aggregate wh_errors + evidence_checklist + quality_components from all frames
+    of a video, compute final VideoEvidenceScore and case_status, save to videos table.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    token = authorization.split(" ", 1)[1]
+    await verify_jwt(token)
+
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Content-Type": "application/json",
+    }
+
+    # Fetch all frames for this video
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            f"{SUPABASE_URL}/rest/v1/dataset_images"
+            f"?video_id=eq.{video_id}&select=ai_result,image_name,created_at&order=created_at.asc",
+            headers=headers,
+        )
+        if not resp.is_success:
+            raise HTTPException(status_code=502, detail=f"DB fetch error: {resp.text}")
+        frames = resp.json()
+
+    if not frames:
+        raise HTTPException(status_code=404, detail="No frames found for this video")
+
+    # ── Aggregate across all frames ────────────────────────────────────────────
+    merged_errors: list[dict] = []
+    seen_codes: set[str] = set()
+    merged_checklist: dict[str, str] = {}  # step → PASS/FAIL/UNCERTAIN/NOT_REQUIRED
+    quality_sums: dict[str, float] = {}
+    quality_counts: dict[str, int] = {}
+
+    for frame in frames:
+        ai = frame.get("ai_result") or {}
+
+        # Merge wh_errors — deduplicate by error_code, keep highest confidence
+        for err in (ai.get("wh_errors") or []):
+            code = err.get("error_code", "")
+            if not code:
+                continue
+            if code in seen_codes:
+                # Update confidence if higher
+                for existing in merged_errors:
+                    if existing["error_code"] == code:
+                        if err.get("confidence", 0) > existing.get("confidence", 0):
+                            existing["confidence"] = err["confidence"]
+                        break
+            else:
+                seen_codes.add(code)
+                merged_errors.append({**err})
+
+        # Merge event_audit — OR logic: PASS wins over UNCERTAIN over FAIL
+        STATUS_RANK = {"PASS": 3, "NOT_REQUIRED": 2, "UNCERTAIN": 1, "FAIL": 0}
+        for step, status in (ai.get("event_audit") or {}).items():
+            cur = merged_checklist.get(step)
+            if cur is None or STATUS_RANK.get(status, 0) > STATUS_RANK.get(cur, 0):
+                merged_checklist[step] = status
+
+        # Merge quality_components — running average
+        for k, v in (ai.get("quality_components") or {}).items():
+            if isinstance(v, (int, float)):
+                quality_sums[k] = quality_sums.get(k, 0.0) + v
+                quality_counts[k] = quality_counts.get(k, 0) + 1
+
+    # Average quality components
+    quality_avg = {k: quality_sums[k] / quality_counts[k] for k in quality_sums}
+
+    # Compute final score and status using wh_rules
+    from wh_rules import compute_evidence_score, determine_case_status
+    score = compute_evidence_score(quality_avg, merged_errors)
+    status = determine_case_status(merged_errors, score, merged_checklist)
+
+    video_audit = {
+        "video_id": video_id,
+        "case_status": status,
+        "video_evidence_score": score,
+        "wh_errors": merged_errors,
+        "event_audit": merged_checklist,
+        "quality_components": quality_avg,
+        "frame_count": len(frames),
+        "finalized_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Save to videos table
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.patch(
+            f"{SUPABASE_URL}/rest/v1/videos?id=eq.{video_id}",
+            headers={**headers, "Prefer": "return=minimal"},
+            json={"video_audit": video_audit},
+        )
+        if not resp.is_success:
+            raise HTTPException(status_code=502, detail=f"DB update error: {resp.text}")
+
+    return video_audit
+
+
 @app.post("/api/analyze_frame")
 async def analyze_frame(
     request: AnalyzeFrameRequest,

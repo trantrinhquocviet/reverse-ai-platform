@@ -573,11 +573,30 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     const wasCancelled = cancelRef.current
     cancelRef.current = false
     await supabase.from('videos').update({ status: ok > 0 ? 'ready' : wasCancelled ? 'pending' : 'failed' }).eq('id', videoId)
+
+    // Finalize video audit — aggregate wh_errors across all frames → verdict
+    let auditMsg = ''
+    if (ok > 0 && !wasCancelled) {
+      try {
+        setJob(prev => prev ? { ...prev, message: 'Finalizing video audit…' } : null)
+        const freshToken = await getToken()
+        const auditResp = await fetch(`/api/finalize_video_audit?video_id=${videoId}`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${freshToken}` },
+        })
+        if (auditResp.ok) {
+          const audit = await auditResp.json() as { case_status?: string; video_evidence_score?: number; wh_errors?: unknown[] }
+          const errCount = audit.wh_errors?.length ?? 0
+          auditMsg = ` | Audit: ${audit.case_status} (score ${audit.video_evidence_score}/100, ${errCount} issues)`
+        }
+      } catch { /* non-fatal */ }
+    }
+
     setJob(prev => prev ? {
       ...prev, status: 'done',
       message: wasCancelled
         ? `Cancelled — ${ok} key frames saved`
-        : `Done! ${kept} key frames from ${monitorTs.length} monitored → ${ok} uploaded (${eventTimeline.length} events)`,
+        : `Done! ${kept} key frames → ${ok} uploaded (${eventTimeline.length} events)${auditMsg}`,
     } : null)
   }, [])
 
