@@ -115,7 +115,7 @@ export function VideoDetail() {
   const updateVideo = useUpdateVideo()
 
   const videoRef = useRef<HTMLVideoElement>(null)
-  const { job, startProcessing } = useProcessing()
+  const { job, paused, startProcessing, pauseJob, resumeJob, cancelJob } = useProcessing()
   const isMyJob = job?.videoId === id
 
   const [editing, setEditing] = useState(false)
@@ -345,41 +345,53 @@ export function VideoDetail() {
           <Card>
             <h3 className="text-sm font-semibold text-[#f0f0f5] mb-3">Actions</h3>
             <div className="space-y-2">
-              <Button
-                variant="outline"
-                className="w-full"
-                onClick={handleStartProcessing}
-                disabled={isMyJob && job?.status === 'running'}
-              >
-                {isMyJob && job?.status === 'running' ? (
-                  <span className="flex items-center gap-2">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    Đang xử lý...
-                  </span>
-                ) : 'Start AI Processing'}
-              </Button>
-
-              {isMyJob && job && (
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-[10px] text-[#8888a8]">
-                    <span>Phân tích frames</span>
-                    <span>{job.current}/{job.total}</span>
+              {isMyJob && job?.status === 'running' ? (
+                <>
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-[10px] text-[#8888a8]">
+                      <span className="flex items-center gap-1.5">
+                        <Loader2 className="w-3 h-3 animate-spin text-[#a89bff]" />
+                        {paused ? 'Đã tạm dừng' : 'Đang xử lý...'}
+                      </span>
+                      <span>{job.current}/{job.total}</span>
+                    </div>
+                    <div className="w-full h-1.5 rounded-full bg-[#1e1e2a]">
+                      <div
+                        className={`h-1.5 rounded-full transition-all duration-300 ${paused ? 'bg-[#fbbf24]' : 'bg-[#7c6af7]'}`}
+                        style={{ width: `${job.total ? (job.current / job.total) * 100 : 0}%` }}
+                      />
+                    </div>
+                    <div className="flex gap-2 text-[10px]">
+                      <span className="text-green-400">✓ {job.results.filter(r => r.status === 'ok').length} ok</span>
+                      <span className="text-red-400">✗ {job.results.filter(r => r.status === 'error').length} lỗi</span>
+                    </div>
                   </div>
-                  <div className="w-full h-1 rounded-full bg-[#1e1e2a]">
-                    <div
-                      className="h-1 rounded-full bg-[#7c6af7] transition-all duration-300"
-                      style={{ width: `${job.total ? (job.current / job.total) * 100 : 0}%` }}
-                    />
+                  {job.message && <p className="text-[10px] text-[#8888a8] text-center">{job.message}</p>}
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => paused ? resumeJob() : pauseJob()}
+                    >
+                      {paused ? '▶ Resume' : '⏸ Pause'}
+                    </Button>
+                    <Button
+                      variant="danger"
+                      className="flex-1"
+                      onClick={() => cancelJob()}
+                    >
+                      ⏹ Stop
+                    </Button>
                   </div>
-                  <div className="flex gap-2 text-[10px]">
-                    <span className="text-green-400">✓ {job.results.filter(r => r.status === 'ok').length} ok</span>
-                    <span className="text-red-400">✗ {job.results.filter(r => r.status === 'error').length} lỗi</span>
-                  </div>
-                </div>
-              )}
-
-              {isMyJob && job?.message && (
-                <p className="text-[10px] text-[#8888a8] text-center">{job.message}</p>
+                </>
+              ) : (
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleStartProcessing}
+                >
+                  Start AI Processing
+                </Button>
               )}
               <Button variant="ghost" className="w-full" disabled>
                 Download Video
