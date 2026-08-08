@@ -125,7 +125,28 @@ export function TopBar() {
       <div className="flex items-center gap-2">
         {/* Processing indicator + queue dropdown */}
         {(job?.status === 'running' || queue.length > 0) && (
-          <div ref={queueRef} className="relative">
+          <div ref={queueRef} className="relative flex items-center gap-1">
+            {/* Pause / Stop buttons — always visible when running */}
+            {job?.status === 'running' && (
+              <>
+                <button
+                  onClick={() => paused ? resumeJob() : pauseJob()}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-[8px] border border-[#fbbf2440] bg-[#fbbf2410] text-[10px] font-medium text-[#fbbf24] hover:bg-[#fbbf2420] transition-colors"
+                  title={paused ? 'Resume processing' : 'Pause processing'}
+                >
+                  {paused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+                  {paused ? 'Resume' : 'Pause'}
+                </button>
+                <button
+                  onClick={() => cancelJob()}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-[8px] border border-[#f8717140] bg-[#f8717110] text-[10px] font-medium text-[#f87171] hover:bg-[#f8717120] transition-colors"
+                  title="Stop processing"
+                >
+                  <Square className="w-3 h-3" />
+                  Stop
+                </button>
+              </>
+            )}
             <button
               onClick={() => setQueueOpen(v => !v)}
               className={cn(
