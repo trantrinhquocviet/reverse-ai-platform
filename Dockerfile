@@ -3,12 +3,11 @@ FROM node:20-slim AS frontend-builder
 
 WORKDIR /frontend
 
-COPY ../reverse-ai-studio/package*.json ./
+COPY reverse-ai-studio/package*.json ./
 RUN npm ci
 
-COPY ../reverse-ai-studio/ ./
+COPY reverse-ai-studio/ ./
 
-# Build with Railway backend as API URL (relative path — same origin)
 ARG VITE_API_URL=/api/v1
 ARG VITE_SUPABASE_URL
 ARG VITE_SUPABASE_ANON_KEY
@@ -27,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
 
 # ── Stage 3: Runtime ──────────────────────────────────────────────────────────
@@ -45,7 +44,7 @@ RUN groupadd --gid 1001 appgroup && \
 
 WORKDIR /app
 
-COPY --chown=appuser:appgroup . .
+COPY --chown=appuser:appgroup backend/ .
 
 # Copy built frontend into static folder
 COPY --from=frontend-builder --chown=appuser:appgroup /frontend/dist ./static
@@ -57,4 +56,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "$PORT", "--workers", "2"]

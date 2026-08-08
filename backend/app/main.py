@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import AsyncGenerator
 
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.core.database import connect_db, disconnect_db
@@ -100,3 +103,14 @@ async def health_check() -> dict:
         "version": settings.APP_VERSION,
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
     }
+
+
+# ── Static frontend (must be mounted last) ────────────────────────────────────
+_STATIC_DIR = Path(__file__).parent.parent.parent / "static"
+
+if _STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str) -> FileResponse:
+        return FileResponse(_STATIC_DIR / "index.html")
