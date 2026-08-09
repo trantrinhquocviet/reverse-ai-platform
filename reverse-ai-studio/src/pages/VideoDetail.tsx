@@ -372,7 +372,7 @@ export function VideoDetail() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Left: player + AI */}
-        <div className="lg:col-span-2 space-y-4">
+        <div className="lg:col-span-2 space-y-4" style={{ minWidth: 0 }}>
           <div className="rounded-[14px] bg-[#111118] border border-[#1e1e2a] overflow-hidden">
             <div className="relative bg-black aspect-video">
               {video.filePath ? (
@@ -438,20 +438,6 @@ export function VideoDetail() {
               </div>
             )}
           </div>
-        </div>
-
-        {/* Key Frames */}
-        <div className="lg:col-span-2">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-[#f0f0f5]">Key Frames</h3>
-            <button
-              onClick={() => setRefetchSignal(v => v + 1)}
-              className="text-[10px] text-[#55556a] hover:text-[#a89bff] transition-colors"
-            >
-              ↻ Refresh
-            </button>
-          </div>
-          <KeyFrameGrid videoId={id ?? ''} refetchSignal={refetchSignal} />
         </div>
 
         {/* Right: metadata + actions */}
@@ -615,6 +601,20 @@ export function VideoDetail() {
             </div>
           </Card>
         </div>
+      </div>
+
+      {/* Key Frames — full width below */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-[#f0f0f5]">Key Frames</h3>
+          <button
+            onClick={() => setRefetchSignal(v => v + 1)}
+            className="text-[10px] text-[#55556a] hover:text-[#a89bff] transition-colors"
+          >
+            ↻ Refresh
+          </button>
+        </div>
+        <KeyFrameGrid videoId={id ?? ''} refetchSignal={refetchSignal} />
       </div>
     </div>
   )
