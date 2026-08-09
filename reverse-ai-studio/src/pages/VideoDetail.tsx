@@ -1,6 +1,6 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Clock, Film, Monitor, Calendar, Tag, Warehouse, Play, ScanLine, Barcode, Package, ShoppingCart, Star, CheckSquare, Pencil, Check, X, Loader2 } from 'lucide-react'
+import { ArrowLeft, Clock, Film, Monitor, Calendar, Tag, Warehouse, Play, ScanLine, Barcode, Package, ShoppingCart, Star, CheckSquare, Pencil, Check, X, Loader2, Images } from 'lucide-react'
 import { useVideo, useUpdateVideo } from '@/hooks/useVideos'
 import { VideoStatusBadge } from '@/components/Badge'
 import { Button } from '@/components/Button'
@@ -8,7 +8,182 @@ import { Card } from '@/components/Card'
 import { Input } from '@/components/Input'
 import { formatDateTime } from '@/utils/formatters'
 import { useProcessing } from '@/contexts/ProcessingContext'
+import { supabase } from '@/services/api'
 import type { LucideIcon } from 'lucide-react'
+
+interface KeyFrame {
+  id: string
+  file_path: string
+  frame_timestamp: number
+  image_name: string
+  ai_result: {
+    label_text?: string[]
+    tracking_codes?: string[]
+    barcodes?: string[]
+    objects?: { label: string; confidence: number }[]
+    event_type?: string
+  } | null
+}
+
+function useVideoFrames(videoId: string, refetchSignal: number) {
+  const [frames, setFrames] = useState<KeyFrame[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!videoId) return
+    setLoading(true)
+    supabase
+      .from('dataset_images')
+      .select('id, file_path, frame_timestamp, image_name, ai_result')
+      .eq('video_id', videoId)
+      .order('frame_timestamp', { ascending: true })
+      .then(({ data }) => {
+        setFrames((data as KeyFrame[]) ?? [])
+        setLoading(false)
+      })
+  }, [videoId, refetchSignal])
+
+  return { frames, loading }
+}
+
+function KeyFrameGrid({ videoId, refetchSignal }: { videoId: string; refetchSignal: number }) {
+  const { frames, loading } = useVideoFrames(videoId, refetchSignal)
+  const [selected, setSelected] = useState<KeyFrame | null>(null)
+
+  if (loading) return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
+      {Array.from({ length: 4 }).map((_, i) => <div key={i} className="aspect-video skeleton rounded-[10px]" />)}
+    </div>
+  )
+
+  if (frames.length === 0) return (
+    <div className="flex flex-col items-center justify-center py-10 text-[#55556a]">
+      <Images className="w-8 h-8 mb-2 opacity-40" />
+      <p className="text-xs">Chưa có frame nào — chạy AI Processing để bắt đầu</p>
+    </div>
+  )
+
+  return (
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
+        {frames.map((f) => {
+          const codes = [...(f.ai_result?.tracking_codes ?? []), ...(f.ai_result?.barcodes ?? [])]
+          const text = f.ai_result?.label_text?.slice(0, 6) ?? []
+          const event = f.ai_result?.event_type
+          return (
+            <button
+              key={f.id}
+              onClick={() => setSelected(f)}
+              className="group relative rounded-[10px] overflow-hidden border border-[#1e1e2a] hover:border-[#7c6af760] transition-colors text-left"
+            >
+              <img
+                src={f.file_path}
+                alt={f.image_name}
+                className="w-full aspect-video object-cover bg-[#0a0a10]"
+                loading="lazy"
+              />
+              {/* timestamp badge */}
+              <div className="absolute top-1.5 left-1.5 bg-black/70 text-white text-[9px] font-mono px-1.5 py-0.5 rounded">
+                {f.frame_timestamp.toFixed(1)}s
+              </div>
+              {/* event badge */}
+              {event && (
+                <div className="absolute top-1.5 right-1.5 bg-[#7c6af7cc] text-white text-[8px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide">
+                  {event.replace(/_/g, ' ')}
+                </div>
+              )}
+              {/* bottom info */}
+              <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 to-transparent p-2">
+                {codes.length > 0 ? (
+                  <p className="text-[9px] font-mono text-[#a89bff] truncate">{codes[0]}</p>
+                ) : text.length > 0 ? (
+                  <p className="text-[9px] text-[#8888a8] truncate">{text.slice(0, 3).join(' · ')}</p>
+                ) : (
+                  <p className="text-[9px] text-[#44445a] italic">no text</p>
+                )}
+              </div>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Detail modal */}
+      {selected && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setSelected(null)}
+        >
+          <div
+            className="bg-[#0d0d14] border border-[#2a2a38] rounded-[16px] overflow-hidden max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e1e2a]">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-[#f0f0f5]">t = {selected.frame_timestamp.toFixed(1)}s</span>
+                {selected.ai_result?.event_type && (
+                  <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-[#7c6af720] text-[#a89bff] uppercase tracking-wide">
+                    {selected.ai_result.event_type.replace(/_/g, ' ')}
+                  </span>
+                )}
+              </div>
+              <button onClick={() => setSelected(null)} className="text-[#55556a] hover:text-[#f0f0f5] transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <img src={selected.file_path} alt="" className="w-full object-contain max-h-64 bg-black" />
+
+            <div className="p-4 space-y-3">
+              {/* Tracking / Barcode */}
+              {[...(selected.ai_result?.tracking_codes ?? []), ...(selected.ai_result?.barcodes ?? [])].length > 0 && (
+                <div>
+                  <p className="text-[9px] text-[#55556a] uppercase tracking-wider mb-1.5">Tracking / Barcode</p>
+                  <div className="space-y-1">
+                    {[...(selected.ai_result?.tracking_codes ?? []), ...(selected.ai_result?.barcodes ?? [])].map((c, i) => (
+                      <p key={i} className="text-xs font-mono text-[#a89bff] bg-[#7c6af710] px-2 py-1 rounded">{c}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* OCR text */}
+              {(selected.ai_result?.label_text ?? []).length > 0 && (
+                <div>
+                  <p className="text-[9px] text-[#55556a] uppercase tracking-wider mb-1.5">OCR Text</p>
+                  <div className="flex flex-wrap gap-1">
+                    {selected.ai_result!.label_text!.map((t, i) => (
+                      <span key={i} className="text-[10px] text-[#8888a8] bg-[#ffffff08] px-1.5 py-0.5 rounded">{t}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Objects */}
+              {(selected.ai_result?.objects ?? []).length > 0 && (
+                <div>
+                  <p className="text-[9px] text-[#55556a] uppercase tracking-wider mb-1.5">Detected Objects</p>
+                  <div className="flex flex-wrap gap-1">
+                    {selected.ai_result!.objects!.map((o, i) => (
+                      <span key={i} className="text-[10px] text-[#f0f0f5] bg-[#ffffff08] px-1.5 py-0.5 rounded">
+                        {o.label.replace(/_/g, ' ')} <span className="text-[#44445a]">{Math.round(o.confidence * 100)}%</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Empty */}
+              {!selected.ai_result?.tracking_codes?.length && !selected.ai_result?.barcodes?.length &&
+               !selected.ai_result?.label_text?.length && !selected.ai_result?.objects?.length && (
+                <p className="text-xs text-[#44445a] italic text-center py-2">Không có dữ liệu OCR</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
 
 interface DetectedObject {
   label: string
@@ -108,6 +283,19 @@ const aiSections: { type: string; icon: LucideIcon; description: string }[] = [
   { type: 'Quality', icon: CheckSquare, description: 'Detect defects and quality issues' },
 ]
 
+function useElapsed(startedAt: number | undefined, running: boolean): string {
+  const [secs, setSecs] = useState(0)
+  useEffect(() => {
+    if (!running || !startedAt) { setSecs(0); return }
+    setSecs(Math.floor((Date.now() - startedAt) / 1000))
+    const id = setInterval(() => setSecs(Math.floor((Date.now() - startedAt) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [running, startedAt])
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return m > 0 ? `${m}m ${s.toString().padStart(2, '0')}s` : `${s}s`
+}
+
 export function VideoDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -120,6 +308,14 @@ export function VideoDetail() {
 
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({ name: '', warehouse: '', brand: '' })
+  const [refetchSignal, setRefetchSignal] = useState(0)
+
+  const elapsed = useElapsed(job?.startedAt, !!(isMyJob && job?.status === 'running'))
+
+  // Refetch frames when job finishes
+  useEffect(() => {
+    if (isMyJob && job?.status === 'done') setRefetchSignal(v => v + 1)
+  }, [isMyJob, job?.status])
 
   const startEdit = () => {
     if (!video) return
@@ -244,6 +440,20 @@ export function VideoDetail() {
           </div>
         </div>
 
+        {/* Key Frames */}
+        <div className="lg:col-span-2">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-[#f0f0f5]">Key Frames</h3>
+            <button
+              onClick={() => setRefetchSignal(v => v + 1)}
+              className="text-[10px] text-[#55556a] hover:text-[#a89bff] transition-colors"
+            >
+              ↻ Refresh
+            </button>
+          </div>
+          <KeyFrameGrid videoId={id ?? ''} refetchSignal={refetchSignal} />
+        </div>
+
         {/* Right: metadata + actions */}
         <div className="space-y-4">
           <Card>
@@ -353,7 +563,10 @@ export function VideoDetail() {
                         <Loader2 className="w-3 h-3 animate-spin text-[#a89bff]" />
                         {paused ? 'Đã tạm dừng' : 'Đang xử lý...'}
                       </span>
-                      <span>{job.current}/{job.total}</span>
+                      <span className="flex items-center gap-2">
+                        <span className="font-mono text-[#7c6af7]">{elapsed}</span>
+                        <span>{job.current}/{job.total}</span>
+                      </span>
                     </div>
                     <div className="w-full h-1.5 rounded-full bg-[#1e1e2a]">
                       <div

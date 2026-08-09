@@ -345,7 +345,6 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     const SCENE_THRESHOLD    = 0.22  // pixelDiff fraction triggering SCENE_CHANGE
     const EDGE_SPIKE         = 0.10  // edge density jump → LABEL_VISIBLE
     const DEDUP_THRESHOLD    = 0.04  // skip upload if too similar to last uploaded frame
-    const MIN_TEXT_LENGTH    = 10    // minimum OCR chars on selected key frame
 
     type KeyFrameEvent = 'PARCEL_ENTER' | 'SCENE_CHANGE' | 'MOTION_EVENT' | 'LABEL_VISIBLE' | 'STATIC_LABEL'
 
@@ -491,12 +490,10 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         fullOcr(best.canvas),
       ])
 
-      if (ocrResult.text.length >= MIN_TEXT_LENGTH || clientBarcodes.length > 0) {
-        if (uploadInFlight) { results.push(await uploadInFlight) }
-        uploadInFlight = uploadKeyFrame(best, eventWindow.event, clientBarcodes, ocrResult)
-        eventTimeline.push({ ts: best.ts, event: eventWindow.event, quality: q })
-        setJob(p => p ? { ...p, results: [...results] } : null)
-      }
+      if (uploadInFlight) { results.push(await uploadInFlight) }
+      uploadInFlight = uploadKeyFrame(best, eventWindow.event, clientBarcodes, ocrResult)
+      eventTimeline.push({ ts: best.ts, event: eventWindow.event, quality: q })
+      setJob(p => p ? { ...p, results: [...results] } : null)
       eventWindow = null
     }
 
