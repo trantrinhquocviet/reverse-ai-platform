@@ -21,6 +21,7 @@ export interface ProcessingJob {
   results: FrameResult[]
   status: 'running' | 'done' | 'error'
   message: string
+  startedAt: number
 }
 
 export interface QueuedVideo {
@@ -278,12 +279,17 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   }
 
   const getToken = async (): Promise<string> => {
-    // Always refresh before use — access tokens expire in ~1h
-    const { data } = await supabase.auth.refreshSession()
-    if (data.session) return data.session.access_token
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) throw new Error('Not authenticated')
-    return session.access_token
+    // Decode exp from JWT payload without signature check — avoids an HTTP round-trip
+    try {
+      const payload = JSON.parse(atob(session.access_token.split('.')[1]))
+      const expiresInSecs = (payload.exp ?? 0) - Math.floor(Date.now() / 1000)
+      if (expiresInSecs > 300) return session.access_token  // still valid for >5min, reuse
+    } catch { /* malformed token — fall through to refresh */ }
+    const { data } = await supabase.auth.refreshSession()
+    if (data.session) return data.session.access_token
+    throw new Error('Session expired')
   }
 
   const startProcessing = useCallback(async (videoId: string, videoName: string, videoEl: HTMLVideoElement) => {
@@ -401,6 +407,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
       current: 0, total: monitorTs.length,
       results: [], status: 'running',
       message: 'Level 1: monitoring video for events...',
+      startedAt: Date.now(),
     })
 
     let token = session.access_token

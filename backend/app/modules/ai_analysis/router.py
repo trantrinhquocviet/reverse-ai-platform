@@ -329,6 +329,21 @@ def _shrink_image(image_base64: str, max_bytes: int = 900_000) -> str:
 
 
 async def verify_jwt(token: str) -> dict:
+    # Fast path: verify locally with SUPABASE_JWT_SECRET (no HTTP round-trip)
+    if settings.SUPABASE_JWT_SECRET:
+        from jose import JWTError, jwt as jose_jwt
+        try:
+            payload = jose_jwt.decode(
+                token,
+                settings.SUPABASE_JWT_SECRET,
+                algorithms=["HS256"],
+                options={"verify_aud": False},
+            )
+            return payload
+        except JWTError as exc:
+            raise HTTPException(status_code=401, detail=f"Invalid or expired token: {exc}")
+
+    # Fallback: remote Supabase verification (used when SUPABASE_JWT_SECRET not set)
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{settings.SUPABASE_URL}/auth/v1/user",

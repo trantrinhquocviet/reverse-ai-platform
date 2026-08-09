@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = ""
     SUPABASE_STORAGE_BUCKET: str = "videos"
 
+    # Supabase JWT secret (Settings → API → JWT Secret in Supabase dashboard)
+    # Used for local token verification — avoids an HTTP call to Supabase per request
+    SUPABASE_JWT_SECRET: str = ""
+
     # OpenRouter AI (vision models)
     OPEN_ROUTE: str = ""
 

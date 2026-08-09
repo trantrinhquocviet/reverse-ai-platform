@@ -42,6 +42,12 @@ function NotificationIcon({ type }: { type: NotificationType }) {
   )
 }
 
+function formatElapsed(secs: number): string {
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return m > 0 ? `${m}m ${s.toString().padStart(2, '0')}s` : `${s}s`
+}
+
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
   const m = Math.floor(diff / 60000)
@@ -60,6 +66,14 @@ export function TopBar() {
   const [notifications, setNotifications] = useState<Notification[]>(mockNotifications)
   const [queueOpen, setQueueOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
+  const [elapsed, setElapsed] = useState(0)
+
+  useEffect(() => {
+    if (job?.status !== 'running' || !job.startedAt) { setElapsed(0); return }
+    setElapsed(Math.floor((Date.now() - job.startedAt) / 1000))
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - job.startedAt) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [job?.status, job?.startedAt])
   const queueRef = useRef<HTMLDivElement>(null)
   const modelRef = useRef<HTMLDivElement>(null)
 
@@ -177,6 +191,7 @@ export function TopBar() {
                       />
                     </div>
                     <span className="text-[9px] text-[#55556a]">{job.current}/{job.total}</span>
+                    <span className="text-[9px] text-[#44445a]">· {formatElapsed(elapsed)}</span>
                   </div>
                 )}
               </div>
@@ -243,9 +258,12 @@ export function TopBar() {
                             </span>
                           </div>
                           <p className="text-[10px] text-[#55556a] mt-0.5 truncate">{job.message}</p>
-                          <p className="text-[9px] text-[#44445a] mt-0.5 truncate">
-                            Model: {VISION_MODELS.find(m => m.id === preferredModel)?.label ?? preferredModel}
-                          </p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <p className="text-[9px] text-[#44445a] truncate flex-1">
+                              Model: {VISION_MODELS.find(m => m.id === preferredModel)?.label ?? preferredModel}
+                            </p>
+                            <span className="text-[9px] text-[#7c6af7] font-mono flex-shrink-0">{formatElapsed(elapsed)}</span>
+                          </div>
                         </div>
                         <ChevronRight className="w-3.5 h-3.5 text-[#55556a] group-hover:text-[#a89bff] transition-colors flex-shrink-0" />
                       </div>

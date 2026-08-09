@@ -104,9 +104,9 @@ export const api = {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.')
 
-      // Extract duration + thumbnail frame in parallel
-      const [duration, thumbnailBlob] = await Promise.all([
-        getVideoDuration(file),
+      // Extract metadata + thumbnail frame in parallel
+      const [{ duration, resolution }, thumbnailBlob] = await Promise.all([
+        getVideoMeta(file),
         extractVideoThumbnail(file),
       ])
 
@@ -139,6 +139,7 @@ export const api = {
         file_path: publicUrl,
         file_size: file.size,
         duration: duration ?? null,
+        resolution: resolution || null,
         thumbnail_path: thumbnailUrl,
         status: 'pending',
       }).select().single()
@@ -358,16 +359,20 @@ function formatDuration(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-function getVideoDuration(file: File): Promise<number | null> {
+function getVideoMeta(file: File): Promise<{ duration: number | null; resolution: string }> {
   return new Promise((resolve) => {
     const video = document.createElement('video')
     video.preload = 'metadata'
     const url = URL.createObjectURL(file)
     video.onloadedmetadata = () => {
       URL.revokeObjectURL(url)
-      resolve(isFinite(video.duration) ? video.duration : null)
+      const duration = isFinite(video.duration) ? video.duration : null
+      const resolution = video.videoWidth && video.videoHeight
+        ? `${video.videoWidth}x${video.videoHeight}`
+        : ''
+      resolve({ duration, resolution })
     }
-    video.onerror = () => { URL.revokeObjectURL(url); resolve(null) }
+    video.onerror = () => { URL.revokeObjectURL(url); resolve({ duration: null, resolution: '' }) }
     video.src = url
   })
 }
