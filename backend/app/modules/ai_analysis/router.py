@@ -831,14 +831,17 @@ async def finalize_video_audit(video_id: str, authorization: str = Header(None))
 
     quality_avg = {k: quality_sums[k] / quality_counts[k] for k in quality_sums}
 
-    try:
-        from app.modules.inspector.wh_rules import compute_evidence_score, determine_case_status
-        score = compute_evidence_score(quality_avg, merged_errors)
-        status = determine_case_status(merged_errors, score, merged_checklist)
-    except ImportError:
-        hasCritical = any(e.get("severity") == "CRITICAL" for e in merged_errors)
-        score = max(0, 100 - len(merged_errors) * 10)
-        status = "WH_PROCESS_FAIL" if hasCritical else ("PASS" if score >= 70 else "HUMAN_REVIEW_REQUIRED")
+    hasCritical = any(e.get("severity") == "CRITICAL" and e.get("source") == "WAREHOUSE" and e.get("confidence", 0) >= 0.85 for e in merged_errors)
+    hasWarning = any(e.get("severity") in ("WARNING", "CRITICAL") for e in merged_errors)
+    score = max(0, 100 - sum(15 if e.get("severity") == "CRITICAL" else 5 for e in merged_errors))
+    if hasCritical:
+        status = "WH_PROCESS_FAIL"
+    elif score >= 70 and not hasWarning:
+        status = "PASS"
+    elif score >= 70:
+        status = "PASS_WITH_WARNING"
+    else:
+        status = "HUMAN_REVIEW_REQUIRED"
 
     video_audit_result = {
         "video_id": video_id,
