@@ -292,9 +292,14 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     throw new Error('Session expired')
   }
 
+  const ACTIVE_JOB_KEY = 'processing_active_job_v1'
+
   const startProcessing = useCallback(async (videoId: string, videoName: string, videoEl: HTMLVideoElement) => {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) return
+
+    // Persist active job so page reload can re-queue it
+    try { localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({ id: videoId, name: videoName, filePath: videoEl.src })) } catch {}
 
     await supabase.from('videos').update({ status: 'processing' }).eq('id', videoId)
 
@@ -619,12 +624,40 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         ? `Cancelled — ${ok} key frames saved`
         : `Done! ${kept} key frames → ${ok} uploaded (${eventTimeline.length} events)${auditMsg}`,
     } : null)
+
+    // Clear persisted active job on finish
+    try { localStorage.removeItem('processing_active_job_v1') } catch {}
   }, [])
 
   const pauseJob = useCallback(() => { pauseRef.current = true; setPaused(true) }, [])
   const resumeJob = useCallback(() => { pauseRef.current = false; setPaused(false) }, [])
-  const cancelJob = useCallback(() => { pauseRef.current = false; setPaused(false); cancelRef.current = true }, [])
+  const cancelJob = useCallback(() => {
+    pauseRef.current = false; setPaused(false); cancelRef.current = true
+    try { localStorage.removeItem('processing_active_job_v1') } catch {}
+  }, [])
   const clearJob = useCallback(() => setJob(null), [])
+
+  // On mount: if previous session was interrupted mid-job, re-queue it
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('processing_active_job_v1')
+      if (!saved) return
+      const video = JSON.parse(saved) as QueuedVideo
+      if (!video.id || !video.filePath) return
+      // Check DB: only re-queue if still stuck as 'processing'
+      supabase.from('videos').select('status').eq('id', video.id).single().then(({ data }) => {
+        if (data?.status === 'processing') {
+          setQueuePersisted(prev => {
+            if (prev.some(v => v.id === video.id)) return prev
+            return [video, ...prev]
+          })
+        } else {
+          localStorage.removeItem('processing_active_job_v1')
+        }
+      })
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const setQueuePersisted = useCallback((updater: (prev: QueuedVideo[]) => QueuedVideo[]) => {
     setQueue(prev => {
