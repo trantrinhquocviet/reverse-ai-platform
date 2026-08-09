@@ -371,6 +371,78 @@ case_status rules:
 - SYSTEM_ERROR: source=SYSTEM errors present
 - HUMAN_REVIEW_REQUIRED: CRITICAL errors but confidence < 0.85, or mixed source"""
 
+VIDEO_CLASSIFY_PROMPT = """You are a warehouse video classification assistant. A fixed overhead camera watches a packing/unpacking workstation.
+
+Your task: analyze THIS SINGLE FRAME and report the current observable state.
+
+DEFINITIONS:
+- box_state: CLOSED (box flaps down, sealed or not), OPEN (flaps open, interior visible), SEALED (tape/film applied), UNKNOWN
+- product_location: OUTSIDE_BOX (product on table, not in box), INSIDE_BOX (product inside closed/open box), PARTIAL (partly in box), UNKNOWN
+- seal_state: SEALED (tape/film present and intact), OPENED (tape/film cut or removed), NOT_VISIBLE (no tape/seal in frame)
+- action: the most prominent action happening RIGHT NOW in this frame — pick ONE:
+    INSERT_PRODUCT   — product being placed into the box
+    REMOVE_PRODUCT   — product being lifted out of the box
+    OPEN_BOX         — box flaps being opened / tape being cut
+    CLOSE_BOX        — box flaps being closed / folded down
+    APPLY_SEAL       — tape or stretch film being applied to box
+    REMOVE_SEAL      — tape or film being cut/peeled off
+    INSPECT_PRODUCT  — product held up or examined by operator
+    NONE             — no clear action visible
+
+IMPORTANT:
+- Base your answer ONLY on what is visible in this frame.
+- Do NOT guess based on what might happen next.
+- If a box is not visible, set box_state: UNKNOWN.
+
+Return ONLY this JSON (no markdown, no explanation):
+{
+  "box_state": "OPEN",
+  "product_location": "OUTSIDE_BOX",
+  "product_visibility": true,
+  "seal_state": "NOT_VISIBLE",
+  "action": "INSERT_PRODUCT",
+  "confidence": 0.82,
+  "notes": ""
+}"""
+
+
+def _infer_video_type(evidence: list[dict]) -> tuple[str, float]:
+    """Infer PACKING_VIDEO / UNBOXING_VIDEO / UNKNOWN_VIDEO from per-frame action sequence."""
+    PACKING_ACTIONS   = {"INSERT_PRODUCT", "CLOSE_BOX", "APPLY_SEAL"}
+    UNBOXING_ACTIONS  = {"REMOVE_PRODUCT", "OPEN_BOX", "REMOVE_SEAL", "INSPECT_PRODUCT"}
+
+    packing_hits  = sum(1 for e in evidence if e.get("action") in PACKING_ACTIONS)
+    unboxing_hits = sum(1 for e in evidence if e.get("action") in UNBOXING_ACTIONS)
+
+    # State transition check: first non-UNKNOWN box_state vs last
+    states = [e.get("box_state") for e in evidence if e.get("box_state") not in (None, "UNKNOWN")]
+    first_state = states[0] if states else None
+    last_state  = states[-1] if states else None
+
+    packing_transition  = first_state in ("OPEN", None) and last_state in ("CLOSED", "SEALED")
+    unboxing_transition = first_state in ("CLOSED", "SEALED") and last_state in ("OPEN", None)
+
+    # Boost signal counts from state transitions
+    if packing_transition:
+        packing_hits += 2
+    if unboxing_transition:
+        unboxing_hits += 2
+
+    total = packing_hits + unboxing_hits
+    if total == 0:
+        return "UNKNOWN_VIDEO", 0.3
+
+    packing_ratio = packing_hits / total
+
+    if packing_ratio >= 0.60:
+        confidence = round(min(0.50 + packing_ratio * 0.45, 0.95), 2)
+        return "PACKING_VIDEO", confidence
+    elif packing_ratio <= 0.40:
+        confidence = round(min(0.50 + (1.0 - packing_ratio) * 0.45, 0.95), 2)
+        return "UNBOXING_VIDEO", confidence
+    else:
+        return "UNKNOWN_VIDEO", round(0.30 + abs(packing_ratio - 0.5) * 0.4, 2)
+
 
 class AnalyzeFrameRequest(BaseModel):
     image_base64: str = ""        # base64 string OR empty when image_url is provided
@@ -588,9 +660,11 @@ async def _call_one_model(image_base64: str, model: str, client: httpx.AsyncClie
     return json.loads(text)
 
 
-async def call_vision_ai(image_base64: str, preferred_model: str = "", text_only: bool = False, active_parcel_only: bool = False, awb_detect: bool = False, product_detect: bool = False, video_audit: bool = False) -> tuple[dict, str]:
+async def call_vision_ai(image_base64: str, preferred_model: str = "", text_only: bool = False, active_parcel_only: bool = False, awb_detect: bool = False, product_detect: bool = False, video_audit: bool = False, _prompt_override: str = "") -> tuple[dict, str]:
     """Try preferred model first, then fallback list on 429 / rate-limit. Returns (result, model_used)."""
-    if active_parcel_only:
+    if _prompt_override:
+        prompt = _prompt_override
+    elif active_parcel_only:
         prompt = ACTIVE_BOX_PROMPT
     elif awb_detect:
         prompt = AWB_DETECT_PROMPT
@@ -1085,3 +1159,114 @@ async def analyze_frame(
         raise HTTPException(status_code=502, detail=f"Database upsert error: {e.response.text}")
 
     return {**record, "model_used": model_used}
+
+
+@app.post("/api/classify_video_type")
+async def classify_video_type(
+    video_id: str,
+    authorization: str = Header(None),
+):
+    """
+    Sample frames from dataset_images, run VIDEO_CLASSIFY_PROMPT on each,
+    infer PACKING_VIDEO / UNBOXING_VIDEO / UNKNOWN_VIDEO from the action sequence,
+    and save result to videos.video_type.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    token = authorization.split(" ", 1)[1]
+    await verify_jwt(token)
+
+    supabase_headers = {
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Content-Type": "application/json",
+    }
+
+    # Fetch all frames for this video ordered by timestamp
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            f"{SUPABASE_URL}/rest/v1/dataset_images"
+            f"?video_id=eq.{video_id}&select=id,file_path,frame_timestamp&order=frame_timestamp.asc",
+            headers=supabase_headers,
+        )
+        if not resp.is_success:
+            raise HTTPException(status_code=502, detail=f"DB fetch error: {resp.text}")
+        frames = resp.json()
+
+    if not frames:
+        raise HTTPException(status_code=404, detail="No frames found for this video")
+
+    # Sample up to 12 frames evenly spread across the timeline
+    MAX_SAMPLES = 12
+    if len(frames) <= MAX_SAMPLES:
+        sampled = frames
+    else:
+        step = len(frames) / MAX_SAMPLES
+        sampled = [frames[int(i * step)] for i in range(MAX_SAMPLES)]
+
+    evidence: list[dict] = []
+    model_used = VISION_MODELS[0]
+
+    async with httpx.AsyncClient(timeout=90.0) as http_client:
+        for frame in sampled:
+            image_url = frame.get("file_path", "")
+            ts = frame.get("frame_timestamp", 0)
+            if not image_url:
+                continue
+            try:
+                img_resp = await http_client.get(image_url, timeout=20.0)
+                img_resp.raise_for_status()
+                image_b64 = _b64.b64encode(img_resp.content).decode()
+                image_b64 = _shrink_image(image_b64)
+
+                frame_result, model_used = await call_vision_ai(
+                    image_b64, preferred_model="", text_only=False,
+                    active_parcel_only=False, awb_detect=False,
+                    product_detect=False, video_audit=False,
+                    _prompt_override=VIDEO_CLASSIFY_PROMPT,
+                )
+                evidence.append({
+                    "timestamp": ts,
+                    "event": frame_result.get("action", "NONE"),
+                    "active_box_id": frame_result.get("active_box_id"),
+                    "box_state": frame_result.get("box_state", "UNKNOWN"),
+                    "product_location": frame_result.get("product_location", "UNKNOWN"),
+                    "product_visibility": frame_result.get("product_visibility", False),
+                    "seal_state": frame_result.get("seal_state", "NOT_VISIBLE"),
+                    "action": frame_result.get("action", "NONE"),
+                    "confidence": frame_result.get("confidence", 0.0),
+                    "notes": frame_result.get("notes", ""),
+                })
+            except Exception as e:
+                evidence.append({
+                    "timestamp": ts,
+                    "box_state": "UNKNOWN",
+                    "product_location": "UNKNOWN",
+                    "seal_state": "NOT_VISIBLE",
+                    "action": "NONE",
+                    "event": "NONE",
+                    "notes": f"error: {e}",
+                })
+
+    video_type, confidence = _infer_video_type(evidence)
+
+    classification = {
+        "video_type": video_type,
+        "confidence": confidence,
+        "evidence": evidence,
+        "model_used": model_used,
+        "frame_count": len(sampled),
+        "classified_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Save to videos table
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.patch(
+            f"{SUPABASE_URL}/rest/v1/videos?id=eq.{video_id}",
+            headers={**supabase_headers, "Prefer": "return=minimal"},
+            json={"video_type": video_type, "video_classification": classification},
+        )
+        if not resp.is_success:
+            raise HTTPException(status_code=502, detail=f"DB update error: {resp.text}")
+
+    return classification

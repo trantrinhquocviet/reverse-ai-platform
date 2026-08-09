@@ -590,6 +590,21 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
           auditMsg = ` | Audit: ${audit.case_status} (score ${audit.video_evidence_score}/100, ${errCount} issues)`
         }
       } catch { /* non-fatal */ }
+
+      // Classify video type (PACKING / UNBOXING / UNKNOWN) from temporal frame evidence
+      try {
+        setJob(prev => prev ? { ...prev, message: 'Classifying video type…' } : null)
+        const freshToken2 = await getToken()
+        const classifyResp = await fetch(`/api/classify_video_type?video_id=${videoId}`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${freshToken2}` },
+        })
+        if (classifyResp.ok) {
+          const classify = await classifyResp.json() as { video_type?: string; confidence?: number }
+          const pct = Math.round((classify.confidence ?? 0) * 100)
+          auditMsg += ` | ${classify.video_type ?? 'UNKNOWN_VIDEO'} (${pct}%)`
+        }
+      } catch { /* non-fatal */ }
     }
 
     setJob(prev => prev ? {
