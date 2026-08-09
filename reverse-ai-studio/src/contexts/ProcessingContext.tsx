@@ -338,7 +338,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     }
 
     // ── Level 1: lightweight monitoring config ──────────────────────────────
-    const MONITOR_INTERVAL   = 0.5   // sample every 0.5s for event detection
+    const MONITOR_INTERVAL   = 1.0   // sample every 1s for event detection
     const POST_EVENT_SECS    = 2.0   // collect frames for 2s after event before picking best
     const ROLLING_BUFFER_MAX = 6     // rolling pre-event buffer size (~3s)
     const MOTION_THRESHOLD   = 0.06  // pixelDiff fraction triggering MOTION_EVENT
