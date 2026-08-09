@@ -427,7 +427,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         client_tracking_codes: ocrResult.codes,
         client_label_text: ocrResult.text ? [ocrResult.text] : [],
         event_type: eventType,
-        ocr_only: true,
+        text_only: true,
       })
 
       let res: Response | null = null
