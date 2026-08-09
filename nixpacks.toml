@@ -1,8 +1,18 @@
 [phases.setup]
-nixPkgs = ["python311", "python311Packages.pip", "gcc", "libpq"]
+nixPkgs = ["python311", "python311Packages.pip", "gcc", "libpq", "nodejs_20"]
 
 [phases.install]
-cmds = ["pip3.11 install -r requirements.txt"]
+cmds = [
+  "pip3.11 install -r requirements.txt",
+  "cd reverse-ai-studio && npm install"
+]
+
+[phases.build]
+cmds = [
+  "cd reverse-ai-studio && npm run build",
+  "mkdir -p backend/static",
+  "cp -r reverse-ai-studio/dist/. backend/static/"
+]
 
 [start]
 cmd = "cd backend && python3.11 -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2"
