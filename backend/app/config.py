@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = ""
     SUPABASE_STORAGE_BUCKET: str = "videos"
 
+    # OpenRouter AI (vision models)
+    OPEN_ROUTE: str = ""
+
     # JWT
     JWT_SECRET: str = "change-me-in-production"
     JWT_ALGORITHM: str = "HS256"

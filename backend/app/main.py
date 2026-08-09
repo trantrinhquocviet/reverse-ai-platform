@@ -17,6 +17,7 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import LoggingMiddleware, RateLimitMiddleware, RequestIDMiddleware
 from app.core.redis import close_redis_pool, get_redis_pool
+from app.modules.ai_analysis.router import router as ai_analysis_router
 from app.modules.analytics.router import router as analytics_router
 from app.modules.annotation.router import router as annotation_router
 from app.modules.auth.router import router as auth_router
@@ -85,6 +86,7 @@ register_exception_handlers(app)
 # ── Routers ───────────────────────────────────────────────────────────────────
 API_PREFIX = "/api/v1"
 
+app.include_router(ai_analysis_router)  # routes at /api/analyze_frame, /api/finalize_video_audit, /api/classify_video_type
 app.include_router(auth_router, prefix=API_PREFIX)
 app.include_router(video_router, prefix=API_PREFIX)
 app.include_router(dataset_router, prefix=API_PREFIX)
