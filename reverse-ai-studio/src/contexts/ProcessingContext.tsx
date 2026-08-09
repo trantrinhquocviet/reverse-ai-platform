@@ -427,7 +427,9 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         client_tracking_codes: ocrResult.codes,
         client_label_text: ocrResult.text ? [ocrResult.text] : [],
         event_type: eventType,
-        text_only: true,
+        // Use AI OCR when client-side Tesseract found nothing; otherwise save client results only
+        text_only: ocrResult.codes.length === 0 && clientBarcodes.length === 0,
+        ocr_only: ocrResult.codes.length > 0 || clientBarcodes.length > 0,
       })
 
       let res: Response | null = null
