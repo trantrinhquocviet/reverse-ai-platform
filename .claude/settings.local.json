@@ -2,7 +2,29 @@
   "permissions": {
     "allow": [
       "Bash(vercel env *)",
-      "Bash(vercel *)"
+      "Bash(vercel *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(cat railway.toml)",
+      "Bash(cat railway.json)",
+      "Bash(cat Procfile)",
+      "Bash(cat requirements.txt)",
+      "Bash(ls backend/static)",
+      "Bash(git commit -m 'fix: remove wh_rules import \\(module does not exist\\), inline scoring logic *)",
+      "Bash(git commit -m 'fix: revert Dockerfile to single-stage — reverse-ai-studio is a submodule unavailable in Railway build *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('backend/app/modules/ai_analysis/router.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('backend/app/main.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(git commit --allow-empty -m 'ci: retrigger Railway build *)",
+      "Bash(git submodule *)",
+      "Bash(git ls-tree *)",
+      "Bash(git commit -m 'fix: switch Railway builder from DOCKERFILE to NIXPACKS *)",
+      "Bash(python3 -c ' *)",
+      "Bash(git commit --allow-empty -m 'ci: retrigger Railway deploy *)",
+      "Bash(railway variables *)",
+      "Bash(railway status *)",
+      "Bash(railway logs *)",
+      "Bash(railway redeploy *)"
     ]
   }
 }

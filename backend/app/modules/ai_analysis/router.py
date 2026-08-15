@@ -467,7 +467,7 @@ async def upsert_dataset_image(video_id: str, file_path: str, image_name: str, a
         check = await client.get(
             f"{settings.SUPABASE_URL}/rest/v1/dataset_images",
             headers={**headers, "Prefer": "return=representation"},
-            params={"video_id": f"eq.{video_id}", "image_name": f"eq.{image_name}", "select": "id"},
+            params={"video_id": f"eq.{video_id}", "frame_timestamp": f"eq.{frame_timestamp}", "select": "id"},
         )
         existing = check.json() if check.status_code == 200 else []
         if existing:
