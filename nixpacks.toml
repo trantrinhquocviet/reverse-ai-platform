@@ -9,7 +9,7 @@ cmds = [
 
 [phases.build]
 cmds = [
-  "cd reverse-ai-studio && npm run build",
+  "cd reverse-ai-studio && npx vite build",
   "mkdir -p backend/static",
   "cp -r reverse-ai-studio/dist/. backend/static/"
 ]
