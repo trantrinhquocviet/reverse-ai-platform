@@ -12,6 +12,15 @@ import { supabase } from '@/services/api'
 import type { LucideIcon } from 'lucide-react'
 import type { VideoAudit } from '@/types'
 
+interface ProcessingLogEntry {
+  job_id?: string
+  model?: string
+  step?: string
+  status?: string
+  timestamp?: string
+  notes?: string
+}
+
 interface KeyFrame {
   id: string
   file_path: string
@@ -26,7 +35,39 @@ interface KeyFrame {
     confidence?: number
     notes?: string
   } | null
-  processing_log?: Array<{ model?: string; step?: string; status?: string; timestamp?: string }> | null
+  processing_log?: ProcessingLogEntry[] | null
+}
+
+interface AnalysisRun {
+  job_id: string
+  timestamp: string
+  frameCount: number
+  okCount: number
+  model: string
+}
+
+function aggregateRuns(frames: KeyFrame[]): AnalysisRun[] {
+  const runs = new Map<string, AnalysisRun>()
+  for (const f of frames) {
+    for (const entry of f.processing_log ?? []) {
+      const key = entry.job_id || entry.timestamp?.slice(0, 10) || 'unknown'
+      const existing = runs.get(key)
+      if (!existing) {
+        runs.set(key, {
+          job_id: key,
+          timestamp: entry.timestamp ?? '',
+          frameCount: 1,
+          okCount: entry.status === 'ok' ? 1 : 0,
+          model: (entry.model ?? '').split('/').pop()?.replace(':free', '') ?? '',
+        })
+      } else {
+        existing.frameCount++
+        if (entry.status === 'ok') existing.okCount++
+        if (!existing.timestamp || entry.timestamp! > existing.timestamp) existing.timestamp = entry.timestamp ?? ''
+      }
+    }
+  }
+  return [...runs.values()].sort((a, b) => b.timestamp.localeCompare(a.timestamp))
 }
 
 function useVideoFrames(videoId: string, refetchSignal: number) {
@@ -605,25 +646,48 @@ export function VideoDetail() {
                   )
                 })}
               </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-                {aiSections.map(({ type, icon: Icon, description }) => (
-                  <div key={type} className="rounded-[12px] bg-[#111118] border border-[#1e1e2a] p-4 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-[8px] bg-[#ffffff08]">
-                        <Icon className="w-3.5 h-3.5 text-[#55556a]" />
+            ) : (() => {
+              const runs = aggregateRuns(frames)
+              if (runs.length === 0) return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {aiSections.map(({ type, icon: Icon, description }) => (
+                    <div key={type} className="rounded-[12px] bg-[#111118] border border-[#1e1e2a] p-4 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1.5 rounded-[8px] bg-[#ffffff08]">
+                          <Icon className="w-3.5 h-3.5 text-[#55556a]" />
+                        </div>
+                        <span className="text-xs font-medium text-[#f0f0f5]">{type}</span>
                       </div>
-                      <span className="text-xs font-medium text-[#f0f0f5]">{type}</span>
+                      <p className="text-[10px] text-[#55556a] leading-snug">{description}</p>
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-1.5 h-1.5 rounded-full bg-[#55556a]" />
+                        <span className="text-[10px] text-[#55556a] italic">Waiting for AI Analysis</span>
+                      </div>
                     </div>
-                    <p className="text-[10px] text-[#55556a] leading-snug">{description}</p>
-                    <div className="flex items-center gap-1.5">
-                      <div className="w-1.5 h-1.5 rounded-full bg-[#55556a]" />
-                      <span className="text-[10px] text-[#55556a] italic">Waiting for AI Analysis</span>
+                  ))}
+                </div>
+              )
+              return (
+                <div className="space-y-2">
+                  {runs.map((run) => (
+                    <div key={run.job_id} className="rounded-[10px] bg-[#111118] border border-[#1e1e2a] p-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] font-mono text-[#55556a]">
+                          {run.timestamp ? new Date(run.timestamp).toLocaleString('vi-VN') : run.job_id}
+                        </span>
+                        <span className="text-[10px] text-[#4ade80]">{run.okCount}/{run.frameCount} frames OK</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[9px] font-mono text-[#7c6af7] bg-[#7c6af710] px-1.5 py-0.5 rounded">{run.model || 'unknown model'}</span>
+                        {run.okCount < run.frameCount && (
+                          <span className="text-[9px] text-[#f87171]">{run.frameCount - run.okCount} lỗi</span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
+                  ))}
+                </div>
+              )
+            })()}
           </div>
         </div>
 

@@ -172,4 +172,4 @@ Frame extraction uses `HTMLVideoElement.currentTime` + Canvas API — requires a
 - **Frontend**: Deployed to Vercel (`reverse-ai-studio/`). URL: `https://reverse-ai-platform.vercel.app`
 - **Backend**: Deployed to Vercel as a Python serverless function. Entry point: `api/index.py` (project root) → `backend/app/main:app`. URL: `https://reverse-ai-platform.vercel.app/api/v1`
 - **Vercel build config** (`vercel.json`): `buildCommand` = `cd reverse-ai-studio && npm install && npm run build`, `outputDirectory` = `reverse-ai-studio/dist`. Python function lives at `api/index.py`; its requirements at `api/requirements.txt` (references `../backend/requirements.txt`).
-- **Push workflow**: Always ask for explicit confirmation before running `git push origin main` or `vercel deploy`. Once the user confirms ("có", "yes", "push đi", etc.), proceed immediately with the push — do not ask again.
+- **Push workflow**: Always ask for explicit confirmation before running `git push origin main` or `vercel deploy`. Once the user confirms ("có", "yes", "push đi", "cho phép", etc.), proceed immediately with the push — do not ask again within the same session.
