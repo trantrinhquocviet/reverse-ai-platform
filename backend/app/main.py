@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys as _sys
+import traceback as _traceback
+import io as _io
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,37 +11,64 @@ from typing import AsyncGenerator
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import settings
-from app.core.database import connect_db, disconnect_db
-from app.core.exceptions import register_exception_handlers
-from app.core.logging import configure_logging
-from app.core.middleware import LoggingMiddleware, RateLimitMiddleware, RequestIDMiddleware
-from app.core.redis import close_redis_pool, get_redis_pool
-import sys as _sys
-import traceback as _traceback
+# ── Startup log buffer (captured before logging is configured) ────────────────
+_startup_log = _io.StringIO()
+
+def _log(msg: str) -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    line = f"[{ts}] {msg}"
+    print(line, file=_sys.stderr)
+    _startup_log.write(line + "\n")
+
+_log("main.py: starting imports")
+
+try:
+    from app.config import settings
+    _log(f"config OK — APP_VERSION={settings.APP_VERSION}")
+except Exception:
+    _log("config FAILED:\n" + _traceback.format_exc())
+    raise
+
+try:
+    from app.core.database import connect_db, disconnect_db
+    from app.core.exceptions import register_exception_handlers
+    from app.core.logging import configure_logging
+    from app.core.middleware import LoggingMiddleware, RateLimitMiddleware, RequestIDMiddleware
+    from app.core.redis import close_redis_pool, get_redis_pool
+    _log("core modules OK")
+except Exception:
+    _log("core modules FAILED:\n" + _traceback.format_exc())
+    raise
 
 _ai_analysis_error: str = ""
+_ai_analysis_ok: bool = False
 try:
     from app.modules.ai_analysis.router import router as ai_analysis_router
     _ai_analysis_ok = True
-except Exception as _e:
+    _log("ai_analysis router OK")
+except Exception:
     ai_analysis_router = None  # type: ignore
-    _ai_analysis_ok = False
     _ai_analysis_error = _traceback.format_exc()
-    print(f"[ERROR] ai_analysis router failed to load:\n{_ai_analysis_error}", file=_sys.stderr)
-from app.modules.analytics.router import router as analytics_router
-from app.modules.annotation.router import router as annotation_router
-from app.modules.auth.router import router as auth_router
-from app.modules.dataset.router import router as dataset_router
-from app.modules.inspector.router import router as inspector_router
-from app.modules.integration.router import router as integration_router
-from app.modules.training.router import router as training_router
-from app.modules.video.router import router as video_router
+    _log(f"ai_analysis router FAILED:\n{_ai_analysis_error}")
+try:
+    from app.modules.analytics.router import router as analytics_router
+    from app.modules.annotation.router import router as annotation_router
+    from app.modules.auth.router import router as auth_router
+    from app.modules.dataset.router import router as dataset_router
+    from app.modules.inspector.router import router as inspector_router
+    from app.modules.integration.router import router as integration_router
+    from app.modules.training.router import router as training_router
+    from app.modules.video.router import router as video_router
+    _log("all other routers OK")
+except Exception:
+    _log("other routers FAILED:\n" + _traceback.format_exc())
+    raise
 
 configure_logging(debug=settings.DEBUG)
+_log("logging configured")
 
 logger = structlog.get_logger(__name__)
 
@@ -127,6 +157,16 @@ async def debug_router() -> dict:
         "ai_analysis_loaded": _ai_analysis_ok,
         "ai_analysis_error": _ai_analysis_error if not _ai_analysis_ok else None,
     }
+
+
+@app.get("/debug/startup.log", tags=["Debug"])
+async def download_startup_log() -> PlainTextResponse:
+    """Download full startup log as plain text — open in browser or curl."""
+    content = _startup_log.getvalue()
+    return PlainTextResponse(
+        content=content or "(no log entries captured)",
+        headers={"Content-Disposition": "attachment; filename=startup.log"},
+    )
 
 
 # ── Static frontend (must be mounted last) ────────────────────────────────────
