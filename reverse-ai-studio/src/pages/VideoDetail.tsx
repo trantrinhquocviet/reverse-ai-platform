@@ -49,25 +49,40 @@ interface AnalysisRun {
 
 function aggregateRuns(frames: KeyFrame[]): AnalysisRun[] {
   const runs = new Map<string, AnalysisRun>()
+
   for (const f of frames) {
-    for (const entry of f.processing_log ?? []) {
-      const key = entry.job_id || entry.timestamp?.slice(0, 10) || 'unknown'
+    const logs = f.processing_log ?? []
+    if (logs.length > 0) {
+      for (const entry of logs) {
+        const key = entry.job_id || entry.timestamp?.slice(0, 10) || 'unknown'
+        const existing = runs.get(key)
+        if (!existing) {
+          runs.set(key, {
+            job_id: key,
+            timestamp: entry.timestamp ?? '',
+            frameCount: 1,
+            okCount: entry.status === 'ok' ? 1 : 0,
+            model: (entry.model ?? '').split('/').pop()?.replace(':free', '') ?? '',
+          })
+        } else {
+          existing.frameCount++
+          if (entry.status === 'ok') existing.okCount++
+          if (!existing.timestamp || (entry.timestamp ?? '') > existing.timestamp) existing.timestamp = entry.timestamp ?? ''
+        }
+      }
+    } else {
+      // Frame có nhưng không có processing_log (processed trước khi có column) — gộp vào "legacy"
+      const key = 'legacy'
       const existing = runs.get(key)
       if (!existing) {
-        runs.set(key, {
-          job_id: key,
-          timestamp: entry.timestamp ?? '',
-          frameCount: 1,
-          okCount: entry.status === 'ok' ? 1 : 0,
-          model: (entry.model ?? '').split('/').pop()?.replace(':free', '') ?? '',
-        })
+        runs.set(key, { job_id: key, timestamp: '', frameCount: 1, okCount: 1, model: 'unknown' })
       } else {
         existing.frameCount++
-        if (entry.status === 'ok') existing.okCount++
-        if (!existing.timestamp || entry.timestamp! > existing.timestamp) existing.timestamp = entry.timestamp ?? ''
+        existing.okCount++
       }
     }
   }
+
   return [...runs.values()].sort((a, b) => b.timestamp.localeCompare(a.timestamp))
 }
 
@@ -687,7 +702,7 @@ export function VideoDetail() {
                     <div key={run.job_id} className="rounded-[10px] bg-[#111118] border border-[#1e1e2a] p-3">
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-[10px] font-mono text-[#55556a]">
-                          {run.timestamp ? new Date(run.timestamp).toLocaleString('vi-VN') : run.job_id}
+                          {run.job_id === 'legacy' ? 'Lần chạy cũ (chưa có log)' : run.timestamp ? new Date(run.timestamp).toLocaleString('vi-VN') : run.job_id}
                         </span>
                         <span className="text-[10px] text-[#4ade80]">{run.okCount}/{run.frameCount} frames OK</span>
                       </div>
