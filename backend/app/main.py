@@ -17,7 +17,18 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import LoggingMiddleware, RateLimitMiddleware, RequestIDMiddleware
 from app.core.redis import close_redis_pool, get_redis_pool
-from app.modules.ai_analysis.router import router as ai_analysis_router
+import sys as _sys
+import traceback as _traceback
+
+_ai_analysis_error: str = ""
+try:
+    from app.modules.ai_analysis.router import router as ai_analysis_router
+    _ai_analysis_ok = True
+except Exception as _e:
+    ai_analysis_router = None  # type: ignore
+    _ai_analysis_ok = False
+    _ai_analysis_error = _traceback.format_exc()
+    print(f"[ERROR] ai_analysis router failed to load:\n{_ai_analysis_error}", file=_sys.stderr)
 from app.modules.analytics.router import router as analytics_router
 from app.modules.annotation.router import router as annotation_router
 from app.modules.auth.router import router as auth_router
@@ -86,7 +97,8 @@ register_exception_handlers(app)
 # ── Routers ───────────────────────────────────────────────────────────────────
 API_PREFIX = "/api/v1"
 
-app.include_router(ai_analysis_router)  # routes at /api/analyze_frame, /api/finalize_video_audit, /api/classify_video_type
+if _ai_analysis_ok and ai_analysis_router is not None:
+    app.include_router(ai_analysis_router)
 app.include_router(auth_router, prefix=API_PREFIX)
 app.include_router(video_router, prefix=API_PREFIX)
 app.include_router(dataset_router, prefix=API_PREFIX)
@@ -104,6 +116,16 @@ async def health_check() -> dict:
         "status": "ok",
         "version": settings.APP_VERSION,
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+        "ai_analysis_loaded": _ai_analysis_ok,
+        "ai_analysis_error": _ai_analysis_error if not _ai_analysis_ok else None,
+    }
+
+
+@app.get("/debug/router", tags=["Debug"])
+async def debug_router() -> dict:
+    return {
+        "ai_analysis_loaded": _ai_analysis_ok,
+        "ai_analysis_error": _ai_analysis_error if not _ai_analysis_ok else None,
     }
 
 
