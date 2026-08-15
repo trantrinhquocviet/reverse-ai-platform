@@ -129,6 +129,20 @@ API_PREFIX = "/api/v1"
 
 if _ai_analysis_ok and ai_analysis_router is not None:
     app.include_router(ai_analysis_router)
+else:
+    # Fallback: return 503 with the real error instead of 405
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    async def _ai_unavailable(request: Request) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": f"AI analysis module failed to load. Error: {_ai_analysis_error}"},
+        )
+
+    for _path in ["/api/analyze_frame", "/api/finalize_video_audit", "/api/classify_video_type", "/api/ai-analysis/metrics"]:
+        app.add_route(_path, _ai_unavailable, methods=["GET", "POST", "OPTIONS"])
+
 app.include_router(auth_router, prefix=API_PREFIX)
 app.include_router(video_router, prefix=API_PREFIX)
 app.include_router(dataset_router, prefix=API_PREFIX)
