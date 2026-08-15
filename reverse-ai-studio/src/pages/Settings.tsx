@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
-import { Plus, Trash2, Warehouse, Tag, User, Palette, Settings as SettingsIcon, Check } from 'lucide-react'
+import { Plus, Trash2, Warehouse, Tag, User, Palette, Settings as SettingsIcon, Check, Users, KeyRound, Mail } from 'lucide-react'
+import { supabase } from '@/services/api'
 import {
   useWarehouses, useAddWarehouse, useDeleteWarehouse,
   useBrands, useAddBrand, useDeleteBrand,
@@ -12,7 +13,7 @@ import { Input } from '@/components/Input'
 import { Modal } from '@/components/Modal'
 import { formatDate } from '@/utils/formatters'
 
-type TabId = 'app' | 'warehouses' | 'brands' | 'profile' | 'theme'
+type TabId = 'app' | 'warehouses' | 'brands' | 'profile' | 'theme' | 'team'
 
 const tabs: { id: TabId; label: string; icon: typeof SettingsIcon }[] = [
   { id: 'app', label: 'Application', icon: SettingsIcon },
@@ -20,6 +21,7 @@ const tabs: { id: TabId; label: string; icon: typeof SettingsIcon }[] = [
   { id: 'brands', label: 'Brands', icon: Tag },
   { id: 'profile', label: 'User Profile', icon: User },
   { id: 'theme', label: 'Theme', icon: Palette },
+  { id: 'team', label: 'Team', icon: Users },
 ]
 
 export function Settings() {
@@ -60,6 +62,7 @@ export function Settings() {
           {activeTab === 'brands' && <BrandSettings />}
           {activeTab === 'profile' && <ProfileSettings />}
           {activeTab === 'theme' && <ThemeSettings />}
+          {activeTab === 'team' && <TeamSettings />}
         </div>
       </div>
     </div>
@@ -414,5 +417,123 @@ function ThemeSettings() {
         </div>
       </div>
     </Card>
+  )
+}
+
+interface TeamUser { id: string; email: string; created_at: string; last_sign_in_at?: string }
+
+function TeamSettings() {
+  const [users, setUsers] = useState<TeamUser[]>([])
+  const [loading, setLoading] = useState(true)
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [invitePassword, setInvitePassword] = useState('')
+  const [inviting, setInviting] = useState(false)
+  const [pwdUserId, setPwdUserId] = useState<string | null>(null)
+  const [newPwd, setNewPwd] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+  const token = localStorage.getItem('access_token') ?? ''
+
+  const fetchUsers = async () => {
+    setLoading(true)
+    const res = await fetch('/api/v1/auth/admin/users', { headers: { Authorization: `Bearer ${token}` } })
+    if (res.ok) setUsers(await res.json())
+    setLoading(false)
+  }
+
+  useEffect(() => { fetchUsers() }, [])
+
+  const invite = async () => {
+    if (!inviteEmail || !invitePassword) return
+    setInviting(true)
+    const res = await fetch('/api/v1/auth/admin/users', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: inviteEmail, password: invitePassword }),
+    })
+    setMsg(res.ok ? `Đã tạo tài khoản ${inviteEmail}` : 'Lỗi tạo tài khoản')
+    setInviteEmail(''); setInvitePassword('')
+    setInviting(false)
+    fetchUsers()
+  }
+
+  const changePassword = async (userId: string) => {
+    if (!newPwd) return
+    setSaving(true)
+    const res = await fetch(`/api/v1/auth/admin/users/${userId}/password`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: newPwd }),
+    })
+    setMsg(res.ok ? 'Đã đổi mật khẩu' : 'Lỗi đổi mật khẩu')
+    setNewPwd(''); setPwdUserId(null)
+    setSaving(false)
+  }
+
+  const deleteUser = async (userId: string, email: string) => {
+    if (!confirm(`Xoá tài khoản ${email}?`)) return
+    await fetch(`/api/v1/auth/admin/users/${userId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+    setMsg(`Đã xoá ${email}`)
+    fetchUsers()
+  }
+
+  return (
+    <div className="space-y-4">
+      {msg && (
+        <div className="p-3 rounded-[10px] bg-[#4ade8020] border border-[#4ade8040] text-[#4ade80] text-xs">{msg}</div>
+      )}
+      <Card>
+        <CardHeader>
+          <CardTitle>Thêm thành viên</CardTitle>
+          <CardDescription>Tạo tài khoản mới cho team</CardDescription>
+        </CardHeader>
+        <div className="flex gap-2 mt-3">
+          <Input placeholder="Email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} className="flex-1" />
+          <Input placeholder="Mật khẩu" type="password" value={invitePassword} onChange={e => setInvitePassword(e.target.value)} className="flex-1" />
+          <Button onClick={invite} disabled={inviting} size="sm">
+            <Mail className="w-3.5 h-3.5 mr-1.5" />{inviting ? 'Đang tạo...' : 'Tạo'}
+          </Button>
+        </div>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Danh sách tài khoản ({users.length})</CardTitle>
+        </CardHeader>
+        <div className="mt-3 space-y-2">
+          {loading ? (
+            <p className="text-xs text-[#55556a]">Đang tải...</p>
+          ) : users.map(u => (
+            <div key={u.id} className="p-3 rounded-[10px] bg-[#0a0a0f] border border-[#1e1e2a] space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-[#f0f0f5]">{u.email}</p>
+                  <p className="text-[10px] text-[#55556a]">
+                    Tạo: {new Date(u.created_at).toLocaleDateString('vi-VN')}
+                    {u.last_sign_in_at && ` · Đăng nhập: ${new Date(u.last_sign_in_at).toLocaleDateString('vi-VN')}`}
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => { setPwdUserId(u.id); setNewPwd('') }} className="p-1.5 rounded-[6px] bg-[#7c6af720] hover:bg-[#7c6af740] text-[#a89bff] transition-colors">
+                    <KeyRound className="w-3.5 h-3.5" />
+                  </button>
+                  <button onClick={() => deleteUser(u.id, u.email)} className="p-1.5 rounded-[6px] bg-[#f8717120] hover:bg-[#f8717140] text-[#f87171] transition-colors">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              {pwdUserId === u.id && (
+                <div className="flex gap-2 pt-1">
+                  <Input placeholder="Mật khẩu mới" type="password" value={newPwd} onChange={e => setNewPwd(e.target.value)} className="flex-1" />
+                  <Button size="sm" onClick={() => changePassword(u.id)} disabled={saving}>
+                    {saving ? 'Đang lưu...' : 'Lưu'}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setPwdUserId(null)}>Huỷ</Button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
   )
 }
