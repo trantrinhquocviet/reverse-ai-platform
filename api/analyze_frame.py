@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import json
 import os
@@ -451,6 +453,7 @@ class AnalyzeFrameRequest(BaseModel):
     video_id: str
     frame_timestamp: float
     filename: str
+    job_id: str = ""              # unique ID per video processing run — used to track multiple concurrent jobs
     client_barcodes: list[str] = []
     client_tracking_codes: list[str] = []
     client_label_text: list[str] = []
@@ -729,6 +732,7 @@ async def upload_to_supabase_storage(image_base64: str, video_id: str, filename:
 async def upsert_dataset_image(
     video_id: str, file_path: str, image_name: str,
     ai_result: dict, frame_timestamp: float,
+    processing_log_entry: dict | None = None,
 ) -> dict:
     headers = {
         "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
@@ -745,9 +749,19 @@ async def upsert_dataset_image(
         existing = check.json() if check.status_code == 200 else []
 
         if existing:
-            # Update existing record
+            # Update existing record — append to processing_log
             row_id = existing[0]["id"]
-            patch = {"ai_result": ai_result, "file_path": file_path}
+            patch: dict = {"ai_result": ai_result, "file_path": file_path}
+            if processing_log_entry:
+                # Fetch existing processing_log to append (avoid overwrite)
+                log_check = await client.get(
+                    f"{SUPABASE_URL}/rest/v1/dataset_images",
+                    headers=headers,
+                    params={"id": f"eq.{row_id}", "select": "processing_log"},
+                )
+                log_rows = log_check.json() if log_check.status_code == 200 else []
+                existing_log = (log_rows[0].get("processing_log") or []) if log_rows else []
+                patch["processing_log"] = existing_log + [processing_log_entry]
             resp = await client.patch(
                 f"{SUPABASE_URL}/rest/v1/dataset_images",
                 headers={**headers, "Prefer": "return=representation"},
@@ -766,6 +780,7 @@ async def upsert_dataset_image(
                 "image_name": image_name,
                 "frame_timestamp": frame_timestamp,
                 "ai_result": ai_result,
+                "processing_log": [processing_log_entry] if processing_log_entry else [],
                 "split_type": "train",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -892,10 +907,17 @@ async def finalize_video_audit(
     # Average quality components
     quality_avg = {k: quality_sums[k] / quality_counts[k] for k in quality_sums}
 
-    # Compute final score and status using wh_rules
-    from wh_rules import compute_evidence_score, determine_case_status
-    score = compute_evidence_score(quality_avg, merged_errors)
-    status = determine_case_status(merged_errors, score, merged_checklist)
+    hasCritical = any(e.get("severity") == "CRITICAL" and e.get("source") == "WAREHOUSE" and e.get("confidence", 0) >= 0.85 for e in merged_errors)
+    hasWarning = any(e.get("severity") in ("WARNING", "CRITICAL") for e in merged_errors)
+    score = max(0, 100 - sum(15 if e.get("severity") == "CRITICAL" else 5 for e in merged_errors))
+    if hasCritical:
+        status = "WH_PROCESS_FAIL"
+    elif score >= 70 and not hasWarning:
+        status = "PASS"
+    elif score >= 70:
+        status = "PASS_WITH_WARNING"
+    else:
+        status = "HUMAN_REVIEW_REQUIRED"
 
     video_audit = {
         "video_id": video_id,
@@ -967,13 +989,25 @@ async def analyze_frame(
                 return rows[0]["id"], (rows[0].get("ai_result") or {})
             return None, {}
 
-        async def _patch_db(row_id: str, merged: dict) -> None:
+        async def _patch_db(row_id: str, merged: dict, log_entry: dict | None = None) -> None:
+            patch_body: dict = {"ai_result": merged}
+            if log_entry:
+                # Fetch current processing_log to append
+                async with httpx.AsyncClient(timeout=10.0) as _lc:
+                    lr = await _lc.get(
+                        f"{SUPABASE_URL}/rest/v1/dataset_images",
+                        headers=_supabase_headers,
+                        params={"id": f"eq.{row_id}", "select": "processing_log"},
+                    )
+                    log_rows = lr.json() if lr.status_code == 200 else []
+                existing_log = (log_rows[0].get("processing_log") or []) if log_rows else []
+                patch_body["processing_log"] = existing_log + [log_entry]
             async with httpx.AsyncClient(timeout=15.0) as _c:
                 await _c.patch(
                     f"{SUPABASE_URL}/rest/v1/dataset_images",
                     headers={**_supabase_headers, "Content-Type": "application/json", "Prefer": "return=representation"},
                     params={"id": f"eq.{row_id}"},
-                    json={"ai_result": merged},
+                    json=patch_body,
                 )
 
         model_used = request.preferred_model or VISION_MODELS[0]
@@ -1096,8 +1130,19 @@ async def analyze_frame(
             }
 
         merged_ai = {**existing_ai, **extra}
+        step_name = ("active_parcel" if request.active_parcel_only else
+                     "awb_detect" if request.awb_detect else
+                     "product_detect" if request.product_detect else "video_audit")
+        step_log = {
+            "job_id": request.job_id or "",
+            "step": step_name,
+            "event_type": request.event_type or "",
+            "model": model_used,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "ok",
+        }
         if row_id:
-            await _patch_db(row_id, merged_ai)
+            await _patch_db(row_id, merged_ai, log_entry=step_log)
             return {"id": row_id, "ai_result": merged_ai, "model_used": model_used}
         return {"ai_result": merged_ai, "model_used": model_used}
 
@@ -1138,6 +1183,18 @@ async def analyze_frame(
         label_text.extend(request.client_label_text)
         ai_result["label_text"] = label_text[:100]
 
+    # Build processing log entry for this call
+    step_type = "ocr_only" if request.ocr_only else ("text_only" if request.text_only else "vision")
+    log_entry = {
+        "job_id": request.job_id or "",
+        "step": step_type,
+        "event_type": request.event_type or "",
+        "model": model_used,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": "ok" if not ai_result.get("notes", "").startswith("parse_error") else "parse_error",
+        "notes": ai_result.get("notes", ""),
+    }
+
     # Upload frame to Supabase Storage (use resolved image_b64, not raw request which may be empty for URL re-analyze)
     try:
         public_url = await upload_to_supabase_storage(
@@ -1154,6 +1211,7 @@ async def analyze_frame(
             image_name=request.filename,
             ai_result=ai_result,
             frame_timestamp=request.frame_timestamp,
+            processing_log_entry=log_entry,
         )
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"Database upsert error: {e.response.text}")
