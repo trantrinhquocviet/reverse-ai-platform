@@ -184,11 +184,14 @@ async def download_startup_log() -> PlainTextResponse:
 
 
 # ── Static frontend (must be mounted last) ────────────────────────────────────
+# Check both locations: pre-copied backend/static and source reverse-ai-studio/dist
 _STATIC_DIR = Path(__file__).parent.parent / "static"
+_DIST_DIR = Path(__file__).parent.parent.parent / "reverse-ai-studio" / "dist"
+_FRONTEND_DIR = _STATIC_DIR if _STATIC_DIR.exists() else (_DIST_DIR if _DIST_DIR.exists() else None)
 
-if _STATIC_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="assets")
+if _FRONTEND_DIR:
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIR / "assets"), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str) -> FileResponse:
-        return FileResponse(_STATIC_DIR / "index.html")
+        return FileResponse(_FRONTEND_DIR / "index.html")
