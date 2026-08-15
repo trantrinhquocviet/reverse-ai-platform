@@ -2,13 +2,14 @@ import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Video, Database, BrainCircuit, Settings,
-  ChevronLeft, ChevronRight, Zap, Tag, Brain,
+  ChevronLeft, ChevronRight, Zap, Tag, Brain, BarChart2,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 
 const coreItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/videos', icon: Video, label: 'Video Center' },
+  { to: '/ai-metrics', icon: BarChart2, label: 'AI Metrics' },
   { to: '/annotation-queue', icon: Tag, label: 'Annotation Queue' },
   { to: '/dataset', icon: Database, label: 'Training Set' },
   { to: '/models', icon: BrainCircuit, label: 'AI Models' },

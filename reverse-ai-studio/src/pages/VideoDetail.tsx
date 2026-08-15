@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Clock, Film, Monitor, Calendar, Tag, Warehouse, Play, ScanLine, Barcode, Package, ShoppingCart, Star, CheckSquare, Pencil, Check, X, Loader2, Images } from 'lucide-react'
+import { ArrowLeft, Clock, Film, Monitor, Calendar, Tag, Warehouse, Play, ScanLine, Barcode, Package, ShoppingCart, Star, CheckSquare, Pencil, Check, X, Loader2, Images, ShieldCheck, ShieldAlert, AlertCircle, HelpCircle, ChevronDown, ChevronUp } from 'lucide-react'
 import { useVideo, useUpdateVideo } from '@/hooks/useVideos'
 import { VideoStatusBadge } from '@/components/Badge'
 import { Button } from '@/components/Button'
@@ -10,6 +10,7 @@ import { formatDateTime } from '@/utils/formatters'
 import { useProcessing } from '@/contexts/ProcessingContext'
 import { supabase } from '@/services/api'
 import type { LucideIcon } from 'lucide-react'
+import type { VideoAudit } from '@/types'
 
 interface KeyFrame {
   id: string
@@ -22,7 +23,10 @@ interface KeyFrame {
     barcodes?: string[]
     objects?: { label: string; confidence: number }[]
     event_type?: string
+    confidence?: number
+    notes?: string
   } | null
+  processing_log?: Array<{ model?: string; step?: string; status?: string; timestamp?: string }> | null
 }
 
 function useVideoFrames(videoId: string, refetchSignal: number) {
@@ -34,7 +38,7 @@ function useVideoFrames(videoId: string, refetchSignal: number) {
     setLoading(true)
     supabase
       .from('dataset_images')
-      .select('id, file_path, frame_timestamp, image_name, ai_result')
+      .select('id, file_path, frame_timestamp, image_name, ai_result, processing_log')
       .eq('video_id', videoId)
       .order('frame_timestamp', { ascending: true })
       .then(({ data }) => {
@@ -63,13 +67,28 @@ function KeyFrameGrid({ videoId, refetchSignal }: { videoId: string; refetchSign
     </div>
   )
 
+  // Aggregate tracking codes across all frames for summary
+  const allCodes = [...new Set(frames.flatMap(f => [...(f.ai_result?.tracking_codes ?? []), ...(f.ai_result?.barcodes ?? [])]))]
+
   return (
     <>
+      {/* Tracking codes summary strip */}
+      {allCodes.length > 0 && (
+        <div className="mb-3 p-2.5 bg-[#7c6af710] border border-[#7c6af730] rounded-[8px] flex flex-wrap gap-1.5 items-center">
+          <span className="text-[9px] text-[#7c6af7] uppercase tracking-wider font-semibold mr-1">Tracking codes ({allCodes.length})</span>
+          {allCodes.map((c, i) => (
+            <span key={i} className="text-[10px] font-mono text-[#a89bff] bg-[#7c6af720] px-1.5 py-0.5 rounded">{c}</span>
+          ))}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
         {frames.map((f) => {
           const codes = [...(f.ai_result?.tracking_codes ?? []), ...(f.ai_result?.barcodes ?? [])]
           const text = f.ai_result?.label_text?.slice(0, 6) ?? []
           const event = f.ai_result?.event_type
+          const conf = f.ai_result?.confidence
+          const confColor = conf == null ? '' : conf >= 0.75 ? '#4ade80' : conf >= 0.5 ? '#fcd34d' : '#f87171'
           return (
             <button
               key={f.id}
@@ -92,10 +111,14 @@ function KeyFrameGrid({ videoId, refetchSignal }: { videoId: string; refetchSign
                   {event.replace(/_/g, ' ')}
                 </div>
               )}
+              {/* confidence dot */}
+              {conf != null && (
+                <div className="absolute bottom-6 right-1.5 w-2 h-2 rounded-full" style={{ backgroundColor: confColor }} title={`AI confidence: ${Math.round(conf * 100)}%`} />
+              )}
               {/* bottom info */}
               <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 to-transparent p-2">
                 {codes.length > 0 ? (
-                  <p className="text-[9px] font-mono text-[#a89bff] truncate">{codes[0]}</p>
+                  <p className="text-[9px] font-mono text-[#a89bff] truncate">{codes[0]}{codes.length > 1 ? ` +${codes.length - 1}` : ''}</p>
                 ) : text.length > 0 ? (
                   <p className="text-[9px] text-[#8888a8] truncate">{text.slice(0, 3).join(' · ')}</p>
                 ) : (
@@ -118,11 +141,22 @@ function KeyFrameGrid({ videoId, refetchSignal }: { videoId: string; refetchSign
             onClick={e => e.stopPropagation()}
           >
             <div className="flex items-center justify-between px-4 py-3 border-b border-[#1e1e2a]">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-semibold text-[#f0f0f5]">t = {selected.frame_timestamp.toFixed(1)}s</span>
                 {selected.ai_result?.event_type && (
                   <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-[#7c6af720] text-[#a89bff] uppercase tracking-wide">
                     {selected.ai_result.event_type.replace(/_/g, ' ')}
+                  </span>
+                )}
+                {selected.ai_result?.confidence != null && (
+                  <span className="text-[9px] px-2 py-0.5 rounded bg-[#ffffff08] text-[#8888a8]">
+                    conf {Math.round(selected.ai_result.confidence * 100)}%
+                  </span>
+                )}
+                {/* Show model used from processing_log */}
+                {selected.processing_log && selected.processing_log.length > 0 && (
+                  <span className="text-[9px] px-2 py-0.5 rounded bg-[#ffffff05] text-[#55556a] font-mono truncate max-w-[160px]">
+                    {(selected.processing_log[selected.processing_log.length - 1].model ?? '').split('/').pop()?.replace(':free', '')}
                   </span>
                 )}
               </div>
@@ -167,6 +201,22 @@ function KeyFrameGrid({ videoId, refetchSignal }: { videoId: string; refetchSign
                       <span key={i} className="text-[10px] text-[#f0f0f5] bg-[#ffffff08] px-1.5 py-0.5 rounded">
                         {o.label.replace(/_/g, ' ')} <span className="text-[#44445a]">{Math.round(o.confidence * 100)}%</span>
                       </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Processing log */}
+              {selected.processing_log && selected.processing_log.length > 0 && (
+                <div>
+                  <p className="text-[9px] text-[#55556a] uppercase tracking-wider mb-1.5">Processing Log</p>
+                  <div className="space-y-1">
+                    {selected.processing_log.map((entry, i) => (
+                      <div key={i} className="flex items-center gap-2 text-[9px]">
+                        <span className={entry.status === 'ok' ? 'text-[#4ade80]' : 'text-[#f87171]'}>●</span>
+                        <span className="text-[#55556a] uppercase">{entry.step}</span>
+                        <span className="font-mono text-[#44445a] truncate flex-1">{(entry.model ?? '').split('/').pop()?.replace(':free', '')}</span>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -282,6 +332,127 @@ const aiSections: { type: string; icon: LucideIcon; description: string }[] = [
   { type: 'Product', icon: ShoppingCart, description: 'Classify and identify products' },
   { type: 'Quality', icon: CheckSquare, description: 'Detect defects and quality issues' },
 ]
+
+const VERDICT_CONFIG: Record<string, { label: string; color: string; bg: string; border: string; Icon: typeof ShieldCheck }> = {
+  PASS:                   { label: 'PASS', color: '#4ade80', bg: '#14532d20', border: '#4ade8040', Icon: ShieldCheck },
+  PASS_WITH_WARNING:      { label: 'PASS (có cảnh báo)', color: '#fcd34d', bg: '#78350f20', border: '#fcd34d40', Icon: ShieldAlert },
+  HUMAN_REVIEW_REQUIRED:  { label: 'CẦN REVIEW THỦ CÔNG', color: '#f59e0b', bg: '#78350f20', border: '#f59e0b40', Icon: HelpCircle },
+  WH_PROCESS_FAIL:        { label: 'QUY TRÌNH THẤT BẠI', color: '#f87171', bg: '#450a0a20', border: '#f8717140', Icon: AlertCircle },
+}
+
+const CHECKLIST_LABELS: Record<string, string> = {
+  active_parcel: 'Parcel nhận diện', awb_visible: 'AWB nhìn thấy', awb_readable: 'AWB đọc được',
+  opening: 'Mở hộp', product_emergence: 'Sản phẩm xuất hiện', product_removed: 'Sản phẩm lấy ra',
+  product_full_view: 'Sản phẩm nhìn đủ', barcode: 'Barcode quét được', product_text: 'Text sản phẩm',
+  quantity: 'Số lượng xác nhận', process_completed: 'Quy trình hoàn tất',
+}
+
+function AuditVerdictPanel({ audit, videoType }: { audit: VideoAudit; videoType?: string | null }) {
+  const [expanded, setExpanded] = useState(false)
+  const cfg = VERDICT_CONFIG[audit.case_status] ?? VERDICT_CONFIG.HUMAN_REVIEW_REQUIRED
+  const { Icon } = cfg
+
+  const checklistPairs = Object.entries(audit.event_audit ?? {})
+  const qualityEntries = Object.entries(audit.quality_components ?? {})
+
+  return (
+    <div className="rounded-[12px] border overflow-hidden" style={{ borderColor: cfg.border, background: cfg.bg }}>
+      {/* Header — verdict */}
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-3">
+          <Icon className="w-5 h-5 flex-shrink-0" style={{ color: cfg.color }} />
+          <div>
+            <p className="text-xs font-bold" style={{ color: cfg.color }}>{cfg.label}</p>
+            <p className="text-[10px] text-[#55556a]">
+              Score: <span style={{ color: cfg.color }}>{audit.video_evidence_score}/100</span>
+              {videoType && <> · <span className="text-[#8888a8]">{videoType.replace('_', ' ')}</span></>}
+              {' '}· {audit.frame_count} frames analysed
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => setExpanded(v => !v)}
+          className="text-[#55556a] hover:text-[#f0f0f5] transition-colors p-1"
+        >
+          {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-4 border-t" style={{ borderColor: cfg.border }}>
+          {/* WH Errors */}
+          {audit.wh_errors.length > 0 && (
+            <div className="pt-3">
+              <p className="text-[9px] text-[#55556a] uppercase tracking-wider mb-2">Lỗi phát hiện ({audit.wh_errors.length})</p>
+              <div className="space-y-1.5">
+                {audit.wh_errors.map((err, i) => (
+                  <div key={i} className="flex items-start gap-2 text-[10px]">
+                    <span className={err.severity === 'CRITICAL' ? 'text-[#f87171]' : 'text-[#fcd34d]'} style={{ flexShrink: 0 }}>
+                      {err.severity === 'CRITICAL' ? '🔴' : '🟡'}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <span className="font-mono text-[#f0f0f5]">{err.error_code}</span>
+                      <span className="text-[#55556a] ml-1.5">({err.source})</span>
+                      {err.description && <p className="text-[#8888a8] mt-0.5 leading-snug">{err.description}</p>}
+                    </div>
+                    <span className="text-[#44445a] flex-shrink-0">{Math.round(err.confidence * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Event checklist */}
+          {checklistPairs.length > 0 && (
+            <div>
+              <p className="text-[9px] text-[#55556a] uppercase tracking-wider mb-2">Evidence Checklist</p>
+              <div className="grid grid-cols-2 gap-1">
+                {checklistPairs.map(([key, val]) => {
+                  const isPass = val === 'PASS' || val === 'NOT_REQUIRED'
+                  const isFail = val === 'FAIL'
+                  return (
+                    <div key={key} className="flex items-center gap-1.5 text-[9px]">
+                      <span className={isPass ? 'text-[#4ade80]' : isFail ? 'text-[#f87171]' : 'text-[#55556a]'}>
+                        {isPass ? '✓' : isFail ? '✗' : '?'}
+                      </span>
+                      <span className="text-[#8888a8] truncate">{CHECKLIST_LABELS[key] ?? key}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Quality components bar chart */}
+          {qualityEntries.length > 0 && (
+            <div>
+              <p className="text-[9px] text-[#55556a] uppercase tracking-wider mb-2">Quality Components</p>
+              <div className="space-y-1.5">
+                {qualityEntries.map(([k, v]) => (
+                  <div key={k}>
+                    <div className="flex justify-between text-[9px] mb-0.5">
+                      <span className="text-[#8888a8]">{k.replace(/_/g, ' ')}</span>
+                      <span style={{ color: v >= 0.7 ? '#4ade80' : v >= 0.4 ? '#fcd34d' : '#f87171' }}>{Math.round(v * 100)}%</span>
+                    </div>
+                    <div className="h-1 bg-[#0a0a10] rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: `${v * 100}%`,
+                          backgroundColor: v >= 0.7 ? '#4ade80' : v >= 0.4 ? '#fcd34d' : '#f87171',
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function useElapsed(startedAt: number | undefined, running: boolean): string {
   const [secs, setSecs] = useState(0)
@@ -602,6 +773,14 @@ export function VideoDetail() {
           </Card>
         </div>
       </div>
+
+      {/* Audit Verdict Panel — full width */}
+      {video.videoAudit && (
+        <div>
+          <h3 className="text-sm font-semibold text-[#f0f0f5] mb-3">Kết luận Video</h3>
+          <AuditVerdictPanel audit={video.videoAudit} videoType={video.videoType} />
+        </div>
+      )}
 
       {/* Key Frames — full width below */}
       <div>

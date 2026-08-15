@@ -11,6 +11,8 @@ export interface FrameResult {
   detectedText?: string[]
   detectedBarcodes?: string[]
   detectedCodes?: string[]
+  ocrConfidence?: number
+  modelUsed?: string
 }
 
 export interface ProcessingJob {
@@ -234,18 +236,25 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   }
 
   // ── Extract tracking codes from OCR text ──
-  // Matches VN shipping carriers: J&T (numeric 12-13d), GHN (GHNXXX), GHTK (numeric 9-12d),
-  // Viettel Post (VTPxxx), VNPost (numeric 11d), Shopee Express (SPXxxx)
+  // Covers major VN couriers: GHN, GHTK, J&T, Shopee Express, Viettel Post,
+  // Vietnam Post domestic/intl, Ninja Van, Best Express, Lazada, Tiki
   const extractCodes = (text: string): string[] => {
     const patterns = [
-      /\b\d{9,15}\b/g,                              // pure numeric 9-15 digits (GHN, J&T, GHTK, VNPost)
-      /\bGHN[A-Z0-9]{5,}\b/gi,                      // GHN tracking: GHNxxxxxxx
-      /\bSPX[A-Z0-9]{5,}\b/gi,                      // Shopee Express
-      /\bVTP[A-Z0-9]{5,}\b/gi,                       // Viettel Post
-      /\bJT[A-Z0-9]{8,}\b/gi,                        // J&T: JTxxxxxxxx
-      /\b[A-Z]{1,4}\d{4,}[A-Z0-9]*\b/g,             // letter prefix + mixed: C028Z67, VN123456789
-      /\b[A-Z0-9]{2,}[-_.][A-Z0-9]{4,}\b/g,         // dash/dot separated
-      /\b[A-Z][A-Z0-9]{5,}\b/g,                      // starts with letter, 6+ total chars
+      /\bGHN[A-Z0-9]{5,}\b/gi,                      // GHN: GHNxxxxxxx
+      /\bSPX[A-Z0-9]{5,}\b/gi,                      // Shopee Express: SPXxxxxxxx
+      /\bVTP[A-Z0-9]{5,}\b/gi,                      // Viettel Post prefix
+      /\bJT[A-Z0-9]{8,}\b/gi,                       // J&T: JTxxxxxxxx
+      /\bGHTK\d{8,12}\b/gi,                         // Giao Hang Tiet Kiem: GHTK + 8-12 digits
+      /\bVN\d{9}VN\b/gi,                            // Vietnam Post intl: VN000000000VN
+      /\bNJV[A-Z0-9]{8,}\b/gi,                      // Ninja Van: NJVxxxxxxxx
+      /\bBEST[A-Z0-9]{8,}\b/gi,                     // Best Express: BESTxxxxxxxx
+      /\bLZD[A-Z0-9]{8,}\b/gi,                      // Lazada
+      /\bTKI[A-Z0-9]{8,}\b/gi,                      // Tiki
+      /\b\d{11}\b/g,                                // VNPost domestic: exactly 11 digits
+      /\b\d{9,15}\b/g,                              // generic numeric 9-15 digits
+      /\b[A-Z]{1,4}\d{4,}[A-Z0-9]*\b/g,            // letter prefix + mixed: VN123456789
+      /\b[A-Z0-9]{2,}[-_.][A-Z0-9]{4,}\b/g,        // dash/dot separated codes
+      /\b[A-Z][A-Z0-9]{5,}\b/g,                     // starts with letter, 6+ chars
     ]
     const found = new Set<string>()
     for (const pat of patterns) {
@@ -267,15 +276,20 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     } catch { return [] }
   }
 
-  const fullOcr = async (canvas: HTMLCanvasElement): Promise<{ text: string; codes: string[] }> => {
+  const fullOcr = async (canvas: HTMLCanvasElement): Promise<{ text: string; codes: string[]; confidence: number }> => {
     try {
       const preprocessed = preprocessForOcr(canvas)
       const worker = await getOcrWorker()
       const { data } = await worker.recognize(preprocessed)
-      const text = data.text
-      const codes = extractCodes(text)
-      return { text: text.trim(), codes }
-    } catch { return { text: '', codes: [] } }
+      // Filter by per-word confidence (>60%) to reduce noise on shipping labels
+      const confidentWords = (data.words ?? []).filter(w => w.confidence > 60).map(w => w.text)
+      const confidentText = confidentWords.length > 0 ? confidentWords.join(' ') : data.text
+      const codes = extractCodes(confidentText)
+      const avgConf = (data.words ?? []).length
+        ? (data.words!.reduce((s, w) => s + w.confidence, 0) / data.words!.length) / 100
+        : 0
+      return { text: confidentText.trim(), codes, confidence: Math.round(avgConf * 100) / 100 }
+    } catch { return { text: '', codes: [], confidence: 0 } }
   }
 
   const getToken = async (): Promise<string> => {
@@ -297,6 +311,9 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   const startProcessing = useCallback(async (videoId: string, videoName: string, videoEl: HTMLVideoElement) => {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) return
+
+    // Unique job ID per video run — tracks which frames belong to this specific processing session
+    const jobId = `${videoId}_${Date.now()}`
 
     // Persist active job so page reload can re-queue it
     try { localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({ id: videoId, name: videoName, filePath: videoEl.src })) } catch {}
@@ -434,6 +451,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
       const base64 = f.canvas.toDataURL('image/jpeg', 0.92).split(',')[1]
       const body = JSON.stringify({
         image_base64: base64, video_id: videoId, frame_timestamp: f.ts, filename,
+        job_id: jobId,
         client_barcodes: clientBarcodes,
         client_tracking_codes: ocrResult.codes,
         client_label_text: ocrResult.text ? [ocrResult.text] : [],
@@ -458,7 +476,7 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         const err = await res!.json().catch(() => ({})) as { detail?: string }
         return { timestamp: f.ts, status: 'error', error: err.detail ?? `HTTP ${res!.status}` }
       }
-      const data = await res!.json() as { id: string; file_path?: string; ai_result: Record<string, unknown> }
+      const data = await res!.json() as { id: string; file_path?: string; ai_result: Record<string, unknown>; model_used?: string }
       const ai = data.ai_result ?? {}
       if (!thumbnailUpdated && data.file_path) {
         thumbnailUpdated = true
@@ -469,6 +487,8 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
         detectedText: (ai.label_text as string[] | undefined) ?? [],
         detectedBarcodes: (ai.barcodes as string[] | undefined) ?? [],
         detectedCodes: (ai.tracking_codes as string[] | undefined) ?? [],
+        ocrConfidence: ocrResult.confidence,
+        modelUsed: data.model_used,
       }
     }
 

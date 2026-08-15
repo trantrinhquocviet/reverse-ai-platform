@@ -1,5 +1,15 @@
 export type VideoStatus = 'Uploaded' | 'Processing' | 'Ready' | 'Failed'
 
+export interface VideoAudit {
+  case_status: 'PASS' | 'PASS_WITH_WARNING' | 'WH_PROCESS_FAIL' | 'HUMAN_REVIEW_REQUIRED'
+  video_evidence_score: number
+  wh_errors: Array<{ error_code: string; severity: string; source: string; description: string; confidence: number }>
+  event_audit: Record<string, string>
+  quality_components: Record<string, number>
+  frame_count: number
+  finalized_at: string
+}
+
 export interface Video {
   id: string
   name: string
@@ -12,6 +22,9 @@ export interface Video {
   resolution: string
   status: VideoStatus
   fileSize: string
+  videoAudit?: VideoAudit | null
+  videoType?: string | null
+  eventTimeline?: Array<{ ts: number; event: string; quality: number }> | null
 }
 
 export interface Activity {

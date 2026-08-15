@@ -35,6 +35,7 @@ import { ModelRegistry } from '@/pages/ModelRegistry'
 import { Evaluation } from '@/pages/Evaluation'
 import { Deployment } from '@/pages/Deployment'
 import { GPUMonitor } from '@/pages/GPUMonitor'
+import { AIMetrics } from '@/pages/AIMetrics'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -86,6 +87,7 @@ function App() {
             <Route path="/evaluation" element={<Evaluation />} />
             <Route path="/deployment" element={<Deployment />} />
             <Route path="/gpu-monitor" element={<GPUMonitor />} />
+            <Route path="/ai-metrics" element={<AIMetrics />} />
           </Route>
         </Routes>
       </BrowserRouter>

@@ -457,7 +457,7 @@ async def upload_to_supabase_storage(image_base64: str, video_id: str, filename:
     return f"{settings.SUPABASE_URL}/storage/v1/object/public/videos/{storage_path}"
 
 
-async def upsert_dataset_image(video_id: str, file_path: str, image_name: str, ai_result: dict, frame_timestamp: float) -> dict:
+async def upsert_dataset_image(video_id: str, file_path: str, image_name: str, ai_result: dict, frame_timestamp: float, processing_log_entry: dict | None = None) -> dict:
     headers = {
         "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
         "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
@@ -472,7 +472,16 @@ async def upsert_dataset_image(video_id: str, file_path: str, image_name: str, a
         existing = check.json() if check.status_code == 200 else []
         if existing:
             row_id = existing[0]["id"]
-            patch = {"ai_result": ai_result, "file_path": file_path}
+            patch: dict = {"ai_result": ai_result, "file_path": file_path}
+            if processing_log_entry:
+                log_check = await client.get(
+                    f"{settings.SUPABASE_URL}/rest/v1/dataset_images",
+                    headers=headers,
+                    params={"id": f"eq.{row_id}", "select": "processing_log"},
+                )
+                log_rows = log_check.json() if log_check.status_code == 200 else []
+                existing_log = (log_rows[0].get("processing_log") or []) if log_rows else []
+                patch["processing_log"] = existing_log + [processing_log_entry]
             resp = await client.patch(
                 f"{settings.SUPABASE_URL}/rest/v1/dataset_images",
                 headers={**headers, "Prefer": "return=representation"},
@@ -490,6 +499,7 @@ async def upsert_dataset_image(video_id: str, file_path: str, image_name: str, a
                 "image_name": image_name,
                 "frame_timestamp": frame_timestamp,
                 "ai_result": ai_result,
+                "processing_log": [processing_log_entry] if processing_log_entry else [],
                 "split_type": "train",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -566,6 +576,7 @@ class AnalyzeFrameRequest(BaseModel):
     video_id: str
     frame_timestamp: float
     filename: str
+    job_id: str = ""
     client_barcodes: list[str] = []
     client_tracking_codes: list[str] = []
     client_label_text: list[str] = []
@@ -582,6 +593,96 @@ class AnalyzeFrameRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+@router.get("/api/ai-analysis/metrics")
+async def get_ai_metrics(authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    await verify_jwt(authorization.split(" ", 1)[1])
+
+    headers = {
+        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+        "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{settings.SUPABASE_URL}/rest/v1/dataset_images",
+            headers=headers,
+            params={"select": "processing_log,ai_result,created_at", "order": "created_at.desc", "limit": "5000"},
+        )
+    rows = resp.json() if resp.is_success else []
+
+    model_stats: dict[str, dict] = {}
+    event_stats: dict[str, int] = {}
+    error_stats: dict[str, int] = {}
+    daily_frames: dict[str, int] = {}
+    total_tracking_codes = 0
+    total_barcodes = 0
+    frames_with_codes = 0
+
+    for row in rows:
+        log_entries = row.get("processing_log") or []
+        ai = row.get("ai_result") or {}
+        date = (row.get("created_at") or "")[:10]
+        if date:
+            daily_frames[date] = daily_frames.get(date, 0) + 1
+
+        tc = len(ai.get("tracking_codes") or [])
+        bc = len(ai.get("barcodes") or [])
+        total_tracking_codes += tc
+        total_barcodes += bc
+        if tc > 0 or bc > 0:
+            frames_with_codes += 1
+
+        for entry in log_entries:
+            model = entry.get("model") or "unknown"
+            status = entry.get("status") or "ok"
+            event = entry.get("event_type") or ""
+            if model not in model_stats:
+                model_stats[model] = {"calls": 0, "ok": 0, "error": 0}
+            model_stats[model]["calls"] += 1
+            if status == "ok":
+                model_stats[model]["ok"] += 1
+            else:
+                model_stats[model]["error"] += 1
+            if event:
+                event_stats[event] = event_stats.get(event, 0) + 1
+
+        for err in (ai.get("wh_errors") or []):
+            code = err.get("error_code") or ""
+            if code:
+                error_stats[code] = error_stats.get(code, 0) + 1
+
+    return {
+        "total_frames": len(rows),
+        "total_tracking_codes": total_tracking_codes,
+        "total_barcodes": total_barcodes,
+        "frames_with_codes": frames_with_codes,
+        "code_hit_rate": round(frames_with_codes / len(rows), 3) if rows else 0,
+        "model_stats": [
+            {
+                "model": m,
+                "calls": s["calls"],
+                "success_rate": round(s["ok"] / s["calls"], 3) if s["calls"] else 0,
+                "error_count": s["error"],
+            }
+            for m, s in sorted(model_stats.items(), key=lambda x: -x[1]["calls"])
+        ],
+        "event_distribution": sorted(
+            [{"event": e, "count": c} for e, c in event_stats.items()],
+            key=lambda x: -x["count"],
+        ),
+        "top_errors": sorted(
+            [{"error_code": e, "count": c} for e, c in error_stats.items()],
+            key=lambda x: -x["count"],
+        )[:10],
+        "daily_frames": sorted(
+            [{"date": d, "frames": c} for d, c in daily_frames.items()],
+            key=lambda x: x["date"],
+        )[-30:],
+    }
+
 
 @router.post("/api/analyze_frame")
 async def analyze_frame(request: AnalyzeFrameRequest, authorization: str = Header(None)):
@@ -771,6 +872,17 @@ async def analyze_frame(request: AnalyzeFrameRequest, authorization: str = Heade
         label_text.extend(request.client_label_text)
         ai_result["label_text"] = label_text[:100]
 
+    step_type = "ocr_only" if request.ocr_only else ("text_only" if request.text_only else "vision")
+    log_entry = {
+        "job_id": request.job_id or "",
+        "step": step_type,
+        "event_type": request.event_type or "",
+        "model": model_used,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": "ok" if not ai_result.get("notes", "").startswith("parse_error") else "parse_error",
+        "notes": ai_result.get("notes", ""),
+    }
+
     try:
         public_url = await upload_to_supabase_storage(image_b64, request.video_id, request.filename)
     except httpx.HTTPStatusError as e:
@@ -781,6 +893,7 @@ async def analyze_frame(request: AnalyzeFrameRequest, authorization: str = Heade
             video_id=request.video_id, file_path=public_url,
             image_name=request.filename, ai_result=ai_result,
             frame_timestamp=request.frame_timestamp,
+            processing_log_entry=log_entry,
         )
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"Database upsert error: {e.response.text}")

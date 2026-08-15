@@ -303,6 +303,9 @@ function mapVideo(row: any): Video {
     resolution: row.resolution || '—',
     status: mapVideoStatus(row.status),
     fileSize: row.file_size ? `${(row.file_size / 1024 / 1024).toFixed(1)} MB` : '—',
+    videoAudit: row.video_audit ?? null,
+    videoType: row.video_type ?? null,
+    eventTimeline: row.event_timeline ?? null,
   }
 }
 
