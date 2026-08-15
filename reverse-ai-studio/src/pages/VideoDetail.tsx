@@ -54,6 +54,15 @@ function KeyFrameGrid({ videoId, refetchSignal }: { videoId: string; refetchSign
   const { frames, loading } = useVideoFrames(videoId, refetchSignal)
   const [selected, setSelected] = useState<KeyFrame | null>(null)
 
+  const jumpToFrame = (code: string) => {
+    const frame = frames.find(f =>
+      f.ai_result?.tracking_codes?.includes(code) ||
+      f.ai_result?.barcodes?.includes(code) ||
+      f.ai_result?.label_text?.includes(code)
+    )
+    if (frame) setSelected(frame)
+  }
+
   if (loading) return (
     <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
       {Array.from({ length: 4 }).map((_, i) => <div key={i} className="aspect-video skeleton rounded-[10px]" />)}
@@ -77,7 +86,7 @@ function KeyFrameGrid({ videoId, refetchSignal }: { videoId: string; refetchSign
         <div className="mb-3 p-2.5 bg-[#7c6af710] border border-[#7c6af730] rounded-[8px] flex flex-wrap gap-1.5 items-center">
           <span className="text-[9px] text-[#7c6af7] uppercase tracking-wider font-semibold mr-1">Tracking codes ({allCodes.length})</span>
           {allCodes.map((c, i) => (
-            <span key={i} className="text-[10px] font-mono text-[#a89bff] bg-[#7c6af720] px-1.5 py-0.5 rounded">{c}</span>
+            <button key={i} onClick={() => jumpToFrame(c)} className="text-[10px] font-mono text-[#a89bff] bg-[#7c6af720] hover:bg-[#7c6af740] px-1.5 py-0.5 rounded transition-colors cursor-pointer">{c}</button>
           ))}
         </div>
       )}
@@ -570,24 +579,31 @@ export function VideoDetail() {
             <h3 className="text-sm font-semibold text-[#f0f0f5] mb-3">AI Analysis</h3>
             {isMyJob && job && job.results.length > 0 ? (
               <div className="space-y-2">
-                {job.results.map((r) => (
-                  <div key={r.timestamp} className="rounded-[10px] bg-[#111118] border border-[#1e1e2a] p-3">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-[10px] font-medium text-[#8888a8]">
-                        t={r.timestamp}s
-                      </span>
-                      {r.status === 'ok'
-                        ? <span className="text-[10px] text-green-400">✓ OK</span>
-                        : <span className="text-[10px] text-red-400">✗ Lỗi</span>}
+                {job.results.map((r) => {
+                  const matchedFrame = frames.find(f => Math.abs(f.frame_timestamp - r.timestamp) < 0.5)
+                  return (
+                    <div
+                      key={r.timestamp}
+                      className={`rounded-[10px] bg-[#111118] border border-[#1e1e2a] p-3 ${matchedFrame ? 'cursor-pointer hover:border-[#7c6af760]' : ''} transition-colors`}
+                      onClick={() => matchedFrame && setSelected(matchedFrame)}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-medium text-[#8888a8]">
+                          t={r.timestamp}s {matchedFrame && <span className="text-[#7c6af7]">↗</span>}
+                        </span>
+                        {r.status === 'ok'
+                          ? <span className="text-[10px] text-green-400">✓ OK</span>
+                          : <span className="text-[10px] text-red-400">✗ Lỗi</span>}
+                      </div>
+                      {r.status === 'ok' && r.detectedText && r.detectedText.length > 0 && (
+                        <p className="text-[10px] text-gray-400 truncate">{r.detectedText.join(', ')}</p>
+                      )}
+                      {r.status === 'error' && (
+                        <p className="text-[10px] text-red-400 truncate">{r.error}</p>
+                      )}
                     </div>
-                    {r.status === 'ok' && r.detectedText && r.detectedText.length > 0 && (
-                      <p className="text-[10px] text-gray-400 truncate">{r.detectedText.join(', ')}</p>
-                    )}
-                    {r.status === 'error' && (
-                      <p className="text-[10px] text-red-400 truncate">{r.error}</p>
-                    )}
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">

@@ -588,6 +588,7 @@ class AnalyzeFrameRequest(BaseModel):
     product_detect: bool = False
     event_type: str = ""
     video_audit: bool = False
+    processing_log_entry: dict | None = None
 
 
 # ---------------------------------------------------------------------------
