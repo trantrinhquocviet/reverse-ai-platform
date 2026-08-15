@@ -336,14 +336,14 @@ async def verify_jwt(token: str) -> dict:
             payload = jose_jwt.decode(
                 token,
                 settings.SUPABASE_JWT_SECRET,
-                algorithms=["HS256"],
+                algorithms=["HS256", "RS256"],
                 options={"verify_aud": False},
             )
             return payload
-        except JWTError as exc:
-            raise HTTPException(status_code=401, detail=f"Invalid or expired token: {exc}")
+        except JWTError:
+            pass  # fall through to remote verification
 
-    # Fallback: remote Supabase verification (used when SUPABASE_JWT_SECRET not set)
+    # Fallback: remote Supabase verification
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             f"{settings.SUPABASE_URL}/auth/v1/user",
