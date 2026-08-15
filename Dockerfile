@@ -1,3 +1,4 @@
+# Build: 2026-08-15
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
