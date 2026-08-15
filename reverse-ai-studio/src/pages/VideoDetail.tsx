@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Clock, Film, Monitor, Calendar, Tag, Warehouse, Play, ScanLine, Barcode, Package, ShoppingCart, Star, CheckSquare, Pencil, Check, X, Loader2, Images, ShieldCheck, ShieldAlert, AlertCircle, HelpCircle, ChevronDown, ChevronUp } from 'lucide-react'
 import { useVideo, useUpdateVideo } from '@/hooks/useVideos'
@@ -530,12 +531,18 @@ export function VideoDetail() {
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({ name: '', warehouse: '', brand: '' })
   const [refetchSignal, setRefetchSignal] = useState(0)
+  const { frames } = useVideoFrames(id ?? '', refetchSignal)
 
   const elapsed = useElapsed(job?.startedAt, !!(isMyJob && job?.status === 'running'))
 
-  // Refetch frames when job finishes
+  const queryClient = useQueryClient()
+
+  // Refetch frames + video (for videoAudit) when job finishes
   useEffect(() => {
-    if (isMyJob && job?.status === 'done') setRefetchSignal(v => v + 1)
+    if (isMyJob && job?.status === 'done') {
+      setRefetchSignal(v => v + 1)
+      queryClient.invalidateQueries({ queryKey: ['video', id] })
+    }
   }, [isMyJob, job?.status])
 
   const startEdit = () => {
