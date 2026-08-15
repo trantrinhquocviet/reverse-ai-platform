@@ -463,24 +463,22 @@ async def upsert_dataset_image(video_id: str, file_path: str, image_name: str, a
         "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
         "Content-Type": "application/json",
     }
+    # Use exact integer comparison to avoid float mismatch (0.0 vs 0)
+    ts_filter = int(frame_timestamp) if frame_timestamp == int(frame_timestamp) else frame_timestamp
+
     async with httpx.AsyncClient(timeout=15.0) as client:
         check = await client.get(
             f"{settings.SUPABASE_URL}/rest/v1/dataset_images",
-            headers={**headers, "Prefer": "return=representation"},
-            params={"video_id": f"eq.{video_id}", "frame_timestamp": f"eq.{frame_timestamp}", "select": "id"},
+            headers=headers,
+            params={"video_id": f"eq.{video_id}", "frame_timestamp": f"eq.{ts_filter}", "select": "id,processing_log"},
         )
-        existing = check.json() if check.status_code == 200 else []
+        existing = check.json() if check.status_code == 200 and isinstance(check.json(), list) else []
+
         if existing:
             row_id = existing[0]["id"]
+            existing_log = existing[0].get("processing_log") or []
             patch: dict = {"ai_result": ai_result, "file_path": file_path}
             if processing_log_entry:
-                log_check = await client.get(
-                    f"{settings.SUPABASE_URL}/rest/v1/dataset_images",
-                    headers=headers,
-                    params={"id": f"eq.{row_id}", "select": "processing_log"},
-                )
-                log_rows = log_check.json() if log_check.status_code == 200 else []
-                existing_log = (log_rows[0].get("processing_log") or []) if log_rows else []
                 patch["processing_log"] = existing_log + [processing_log_entry]
             resp = await client.patch(
                 f"{settings.SUPABASE_URL}/rest/v1/dataset_images",
@@ -508,6 +506,25 @@ async def upsert_dataset_image(video_id: str, file_path: str, image_name: str, a
                 headers={**headers, "Prefer": "return=representation"},
                 json=record,
             )
+            if resp.status_code == 409:
+                # Race condition: another request inserted between check and insert — patch instead
+                check2 = await client.get(
+                    f"{settings.SUPABASE_URL}/rest/v1/dataset_images",
+                    headers=headers,
+                    params={"video_id": f"eq.{video_id}", "frame_timestamp": f"eq.{ts_filter}", "select": "id"},
+                )
+                rows2 = check2.json() if check2.status_code == 200 else []
+                if rows2:
+                    row_id = rows2[0]["id"]
+                    patch2: dict = {"ai_result": ai_result, "file_path": file_path}
+                    if processing_log_entry:
+                        patch2["processing_log"] = [processing_log_entry]
+                    resp = await client.patch(
+                        f"{settings.SUPABASE_URL}/rest/v1/dataset_images",
+                        headers={**headers, "Prefer": "return=representation"},
+                        params={"id": f"eq.{row_id}"},
+                        json=patch2,
+                    )
             resp.raise_for_status()
             rows = resp.json()
             return rows[0] if rows else record
