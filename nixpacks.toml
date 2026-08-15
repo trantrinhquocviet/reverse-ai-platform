@@ -8,7 +8,9 @@ cmds = [
 ]
 
 [phases.build]
-cmds = []
+cmds = [
+  "mkdir -p backend/static && cp -r reverse-ai-studio/dist/. backend/static/"
+]
 
 [start]
 cmd = "cd backend && python3.11 -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2"
