@@ -622,15 +622,22 @@ export function VideoDetail() {
               <div className="space-y-2">
                 {job.results.map((r) => {
                   const matchedFrame = frames.find(f => Math.abs(f.frame_timestamp - r.timestamp) < 0.5)
+                  const handleClick = () => {
+                    if (videoRef.current) {
+                      videoRef.current.currentTime = r.timestamp
+                      videoRef.current.pause()
+                      videoRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                    }
+                  }
                   return (
                     <div
                       key={r.timestamp}
-                      className={`rounded-[10px] bg-[#111118] border border-[#1e1e2a] p-3 ${matchedFrame ? 'cursor-pointer hover:border-[#7c6af760]' : ''} transition-colors`}
-                      onClick={() => matchedFrame && setSelected(matchedFrame)}
+                      className="rounded-[10px] bg-[#111118] border border-[#1e1e2a] p-3 cursor-pointer hover:border-[#7c6af760] transition-colors"
+                      onClick={handleClick}
                     >
                       <div className="flex items-center justify-between mb-1.5">
                         <span className="text-[10px] font-medium text-[#8888a8]">
-                          t={r.timestamp}s {matchedFrame && <span className="text-[#7c6af7]">↗</span>}
+                          t={r.timestamp}s <span className="text-[#7c6af7]">↗</span>
                         </span>
                         {r.status === 'ok'
                           ? <span className="text-[10px] text-green-400">✓ OK</span>
